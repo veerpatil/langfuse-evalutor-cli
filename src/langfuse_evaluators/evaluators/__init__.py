@@ -1,0 +1,4 @@
+from .llm_as_judge import LLM_AS_JUDGE_EVALUATORS
+from .code_evaluators import CODE_EVALUATORS
+
+ALL_EVALUATORS = LLM_AS_JUDGE_EVALUATORS + CODE_EVALUATORS
