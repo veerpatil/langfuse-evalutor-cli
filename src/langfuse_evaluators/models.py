@@ -97,6 +97,8 @@ class Evaluator:
     @classmethod
     def from_api(cls, payload: Any) -> Evaluator:
         data = _as_mapping(payload, "evaluator")
+        # Both keys are accepted until the live v2 contract is confirmed;
+        # see the note on ``_unwrap_object`` in client.py.
         evaluator_id = data.get("id") or data.get("evaluatorId")
         if not isinstance(evaluator_id, str) or not evaluator_id:
             raise LangfuseResponseError(

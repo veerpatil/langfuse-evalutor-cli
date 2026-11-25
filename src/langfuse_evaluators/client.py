@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import http.client
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 from urllib.parse import quote, urlencode, urlparse
 
 from .config import get_config
-from .errors import LangfuseAPIError, LangfuseTransportError
+from .errors import LangfuseAPIError, LangfuseError, LangfuseTransportError
 from .models import (
     Evaluator,
     EvaluatorPage,
@@ -37,6 +37,38 @@ def _get_connection(host_url: str) -> http.client.HTTPConnection:
     if parsed.scheme == "https":
         return http.client.HTTPSConnection(host, timeout=TIMEOUT_SECONDS)
     return http.client.HTTPConnection(host, timeout=TIMEOUT_SECONDS)
+
+
+def _base_path(host_url: str) -> str:
+    """Return the path a self-hosted Langfuse instance is mounted under.
+
+    ``LANGFUSE_HOST`` may include a path prefix (for example
+    ``https://example.com/langfuse``); that prefix has to be prepended to
+    every API path so path-mounted deployments are not sent to the server
+    root.
+    """
+    return urlparse(host_url).path.rstrip("/")
+
+
+def _authorization_header(config: Mapping[str, str]) -> str:
+    """Build the Basic auth header, rejecting unsafe credential values.
+
+    Credentials normally come base64-encoded from ``get_config``, but the
+    client functions accept an arbitrary mapping. Control characters
+    would allow header injection, and ``http.client`` errors can echo the
+    value, so fail before the request is sent instead.
+    """
+    credentials = config.get("credentials", "")
+    if (
+        not isinstance(credentials, str)
+        or not credentials
+        or not credentials.isascii()
+        or not credentials.isprintable()
+    ):
+        raise LangfuseError(
+            "Langfuse credentials are missing or contain invalid characters"
+        )
+    return f"Basic {credentials}"
 
 
 def _parse_response_body(body: str) -> Any:
@@ -63,15 +95,15 @@ def _request(
     callers can surface it; the response models reject it where a
     structured payload is required.
     """
-    url = path
+    url = f"{_base_path(config['host'])}{path}"
     if query:
         params = {key: value for key, value in query.items() if value is not None}
         if params:
-            url = f"{path}?{urlencode(params)}"
+            url = f"{url}?{urlencode(params)}"
 
     headers = {
         "Accept": "application/json",
-        "Authorization": f"Basic {config['credentials']}",
+        "Authorization": _authorization_header(config),
     }
     payload = None
     if body is not None:
@@ -99,7 +131,13 @@ def _request(
 
 
 def _unwrap_object(body: Any) -> Any:
-    """Accept both a bare object and an object wrapped in ``data``."""
+    """Accept both a bare object and an object wrapped in ``data``.
+
+    The upstream v2 reference was unreachable when this client was
+    written, so both response shapes are tolerated until the live
+    contract can be confirmed. Pin this to the documented shape and drop
+    the fallback once verified against a real v2 instance.
+    """
     if isinstance(body, Mapping) and isinstance(body.get("data"), Mapping):
         return body["data"]
     return body
@@ -122,11 +160,11 @@ def create_evaluator(
     evaluator: Mapping[str, Any], config: Mapping[str, str]
 ) -> Evaluator:
     """Create an evaluator and return it with its new ``evaluatorId``."""
-    _, _, created = _create_evaluator(evaluator, config)
+    _, _, created = _create_evaluator_with_status(evaluator, config)
     return created
 
 
-def _create_evaluator(
+def _create_evaluator_with_status(
     evaluator: Mapping[str, Any], config: Mapping[str, str]
 ) -> tuple[int, str, Evaluator]:
     payload = validate_evaluator_payload(evaluator)
@@ -169,31 +207,47 @@ def list_evaluators(
     return EvaluatorPage.from_api(body)
 
 
-def iter_evaluators(
-    config: Mapping[str, str], limit: int = DEFAULT_PAGE_SIZE
-) -> Iterator[Evaluator]:
-    """Yield every evaluator, following cursors and de-duplicating by id.
+def _iter_pages(
+    fetch_page: Callable[[str | None], Any],
+    key: Callable[[Any], Any],
+    cursor: str | None = None,
+) -> Iterator[Any]:
+    """Yield de-duplicated items across cursor pages.
 
-    Iteration stops when the API stops returning a cursor or repeats a
-    cursor it already returned, which keeps a misbehaving page from
-    looping forever.
+    ``fetch_page`` requests one page starting at the given cursor and
+    ``key`` identifies an item for de-duplication. Iteration stops when
+    the API stops returning a cursor or repeats a cursor it already
+    returned, which keeps a misbehaving page from looping forever.
     """
-    seen_ids: set[str] = set()
+    seen_keys: set[Any] = set()
     seen_cursors: set[str] = set()
-    cursor: str | None = None
 
     while True:
-        page = list_evaluators(config, limit=limit, cursor=cursor)
-        for evaluator in page.data:
-            if evaluator.evaluator_id in seen_ids:
+        page = fetch_page(cursor)
+        for item in page.data:
+            marker = key(item)
+            if marker in seen_keys:
                 continue
-            seen_ids.add(evaluator.evaluator_id)
-            yield evaluator
+            seen_keys.add(marker)
+            yield item
 
         if not page.cursor or page.cursor in seen_cursors:
             return
         seen_cursors.add(page.cursor)
         cursor = page.cursor
+
+
+def iter_evaluators(
+    config: Mapping[str, str],
+    limit: int = DEFAULT_PAGE_SIZE,
+    cursor: str | None = None,
+) -> Iterator[Evaluator]:
+    """Yield evaluators from ``cursor`` onward, de-duplicating by id."""
+    yield from _iter_pages(
+        lambda page_cursor: list_evaluators(config, limit=limit, cursor=page_cursor),
+        lambda evaluator: evaluator.evaluator_id,
+        cursor,
+    )
 
 
 def list_evaluator_versions(
@@ -217,24 +271,16 @@ def iter_evaluator_versions(
     evaluator_id: str,
     config: Mapping[str, str],
     limit: int = DEFAULT_PAGE_SIZE,
+    cursor: str | None = None,
 ) -> Iterator[EvaluatorVersion]:
-    """Yield every version of an evaluator, following cursors."""
-    seen_versions: set[int] = set()
-    seen_cursors: set[str] = set()
-    cursor: str | None = None
-
-    while True:
-        page = list_evaluator_versions(evaluator_id, config, limit=limit, cursor=cursor)
-        for version in page.data:
-            if version.version in seen_versions:
-                continue
-            seen_versions.add(version.version)
-            yield version
-
-        if not page.cursor or page.cursor in seen_cursors:
-            return
-        seen_cursors.add(page.cursor)
-        cursor = page.cursor
+    """Yield an evaluator's versions from ``cursor`` onward."""
+    yield from _iter_pages(
+        lambda page_cursor: list_evaluator_versions(
+            evaluator_id, config, limit=limit, cursor=page_cursor
+        ),
+        lambda version: version.version,
+        cursor,
+    )
 
 
 def create_evaluators(evaluators: list[Mapping[str, Any]]) -> list[dict]:
@@ -251,7 +297,7 @@ def create_evaluators(evaluators: list[Mapping[str, Any]]) -> list[dict]:
     for evaluator in evaluators:
         name = evaluator.get("name", "") if isinstance(evaluator, Mapping) else ""
         try:
-            status, reason, created = _create_evaluator(evaluator, config)
+            status, reason, created = _create_evaluator_with_status(evaluator, config)
         except LangfuseAPIError as exc:
             results.append({**exc.to_result(), **_result_identity(name)})
             continue
@@ -272,6 +318,18 @@ def create_evaluators(evaluators: list[Mapping[str, Any]]) -> list[dict]:
                 {
                     "status": 0,
                     "reason": "MalformedRequestOrResponse",
+                    "body": {"message": str(exc)},
+                    **_result_identity(name),
+                }
+            )
+            continue
+        except TypeError as exc:
+            # A payload may pass validation yet contain a value json.dumps
+            # cannot serialise, because unknown keys are passed through.
+            results.append(
+                {
+                    "status": 0,
+                    "reason": exc.__class__.__name__,
                     "body": {"message": str(exc)},
                     **_result_identity(name),
                 }

@@ -142,7 +142,7 @@ def test_list_all_follows_every_page(monkeypatch):
     monkeypatch.setattr(
         main_module,
         "iter_evaluators",
-        lambda config, limit: iter([EVALUATOR]),
+        lambda config, limit, cursor=None: iter([EVALUATOR]),
     )
 
     code, out, _ = run_cli(monkeypatch, ["list", "--all", "--json"])
@@ -150,6 +150,22 @@ def test_list_all_follows_every_page(monkeypatch):
     assert code == 0
     payload = json.loads(out)
     assert [item["id"] for item in payload["data"]] == ["eval-1"]
+
+
+def test_list_all_starts_at_supplied_cursor(monkeypatch):
+    stub_config(monkeypatch)
+    captured = {}
+
+    def fake_iter(config, limit, cursor=None):
+        captured["cursor"] = cursor
+        return iter([EVALUATOR])
+
+    monkeypatch.setattr(main_module, "iter_evaluators", fake_iter)
+
+    code, _, _ = run_cli(monkeypatch, ["list", "--all", "--cursor", "resume"])
+
+    assert code == 0
+    assert captured == {"cursor": "resume"}
 
 
 def test_get_evaluator_by_id(monkeypatch):
@@ -246,7 +262,7 @@ def test_versions_all_json_output(monkeypatch):
     monkeypatch.setattr(
         main_module,
         "iter_evaluator_versions",
-        lambda evaluator_id, config, limit: iter([version]),
+        lambda evaluator_id, config, limit, cursor=None: iter([version]),
     )
 
     code, out, _ = run_cli(monkeypatch, ["versions", "eval-1", "--all", "--json"])

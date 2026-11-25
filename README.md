@@ -72,8 +72,9 @@ LANGFUSE_HOST=http://localhost:3000
 ```
 
 `LANGFUSE_HOST` defaults to `http://localhost:3000` if it is not set. Any base
-URL works, including self-hosted instances and paths; requests always target
-`<host>/api/public/v2/evaluators`.
+URL works, including self-hosted instances and path-mounted deployments; a
+path prefix in the host is preserved, so `https://example.com/langfuse`
+targets `https://example.com/langfuse/api/public/v2/evaluators`.
 
 ## Usage
 
@@ -118,6 +119,7 @@ Each create result includes the historical `status`, `reason`, `body`, and
 uv run create-evaluators list
 uv run create-evaluators list --limit 25 --cursor <cursor>
 uv run create-evaluators list --all          # follow every cursor
+uv run create-evaluators list --all --cursor <cursor>  # resume, then follow
 uv run create-evaluators list --all --json   # machine-readable output
 ```
 
@@ -187,6 +189,8 @@ and evaluator payloads are never included in error messages or log output.
 - Update: `PUT /api/public/v2/evaluators/<evaluatorId>`.
 - Delete: `DELETE /api/public/v2/evaluators/<evaluatorId>`.
 - Versions: `GET /api/public/v2/evaluators/<evaluatorId>/versions`.
+- `list --all` and `versions --all` start from `--cursor` when it is supplied,
+  then follow the cursors the API returns.
 - Errors keep the structured Langfuse error body and are mapped to stable kinds:
   `validation_error` (400/422), `authentication_error` (401),
   `permission_error` (403), `not_found` (404), `conflict` (409),
@@ -195,8 +199,23 @@ and evaluator payloads are never included in error messages or log output.
 
 ## Migrating from the unstable API
 
+This is a `0.2.0` release; the `0.1.0` release still targets the unstable
+endpoint. See the release notes below for what changed.
+
 - The endpoint moved from `/api/public/unstable/evaluators` to
-  `/api/public/v2/evaluators`.
+  `/api/public/v2/evaluators`. `0.2.0` requires a Langfuse server that exposes
+  the v2 evaluators endpoint; a self-hosted deployment that only serves the
+  unstable endpoint will start returning `not_found`. Pin
+  `langfuse-evaluators==0.1.0` for those installations until the server is
+  upgraded. The exact minimum self-hosted Langfuse version that ships this
+  endpoint could not be confirmed while this release was written, so check
+  your server's API reference before upgrading.
+- **Python API break:** `create_evaluator()` now returns an `Evaluator` and
+  raises `LangfuseAPIError` / `LangfuseTransportError` / `ValueError` instead
+  of returning a `{status, reason, body}` dict. Callers that read
+  `result["status"]` must switch to the returned object and to exceptions.
+  The batch helper `create_evaluators()` keeps the legacy per-item dict shape
+  (`status`, `reason`, `body`, `name`) and adds `evaluatorId` and `version`.
 - Evaluators are identified by `evaluatorId` instead of by name. The
   `create-evaluators` CLI still reports `name` for readability but also reports
   `evaluatorId`; downstream automation should key on `evaluatorId`.
@@ -206,6 +225,15 @@ and evaluator payloads are never included in error messages or log output.
 - Errors now expose a structured `body` plus a stable `error_kind`. Code that
   matched on message strings should switch to `error_kind` or
   `LangfuseAPIError.status_code`.
+- The `create-evaluators` entry point keeps its historical name for backward
+  compatibility even though it now also manages evaluators through the `list`,
+  `get`, `update`, `delete`, and `versions` subcommands. A neutral alias is
+  not added in this release.
+- While the v2 API reference was unreachable, the client tolerates both a bare
+  object/list and a `data`-enveloped response, and reads either `id` or
+  `evaluatorId`. That leniency is temporary; pin it to the documented shape
+  and remove the fallbacks once the contract is confirmed against a live v2
+  instance.
 
 ## Development
 
@@ -222,9 +250,18 @@ Without `uv`, the tests also run from a checkout:
 python -m pytest
 ```
 
+The suite has a unit layer that replaces `http.client` with a fake, plus a
+small integration layer in `tests/test_integration.py` that runs the client
+against a real local HTTP server.
+
 ## Notes
 
 - The API path used by this project is `/api/public/v2/evaluators`.
+- `LANGFUSE_HOST` may include a path prefix, which is preserved on every
+  request.
+- Credentials are validated before the request is sent; values containing
+  control characters or non-ASCII characters are rejected without echoing the
+  value.
 - Code evaluators use TypeScript source code and set `sourceCodeLanguage` to `TYPESCRIPT`.
 - The CLI exits with status code `1` if any evaluator creation request fails or if a
   management command fails.

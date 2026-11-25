@@ -171,7 +171,7 @@ def _format_version(version) -> str:
 def _list(args: argparse.Namespace) -> int:
     config = get_config()
     if args.fetch_all:
-        evaluators = list(iter_evaluators(config, limit=args.limit))
+        evaluators = list(iter_evaluators(config, limit=args.limit, cursor=args.cursor))
         page_meta = None
         cursor = None
     else:
@@ -207,7 +207,11 @@ def _get(args: argparse.Namespace) -> int:
 def _load_update_payload(path: Path) -> dict:
     changes = json.loads(path.read_text())
     if not isinstance(changes, dict):
-        raise TypeError(f"Update payload in {path} must be a JSON object")
+        # Keep payload-shape errors on the ValueError idiom used by
+        # models.validate_evaluator_payload for non-mapping payloads.
+        raise ValueError(  # noqa: TRY004
+            f"Update payload in {path} must be a JSON object"
+        )
     return changes
 
 
@@ -234,7 +238,9 @@ def _versions(args: argparse.Namespace) -> int:
     config = get_config()
     if args.fetch_all:
         versions = list(
-            iter_evaluator_versions(args.evaluator_id, config, limit=args.limit)
+            iter_evaluator_versions(
+                args.evaluator_id, config, limit=args.limit, cursor=args.cursor
+            )
         )
         page_meta = None
         cursor = None

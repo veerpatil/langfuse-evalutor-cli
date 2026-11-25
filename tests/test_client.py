@@ -11,6 +11,7 @@ from helpers import FakeResponse, json_response
 from langfuse_evaluators import client
 from langfuse_evaluators.errors import (
     LangfuseAPIError,
+    LangfuseError,
     LangfuseResponseError,
     LangfuseTransportError,
 )
@@ -127,6 +128,14 @@ def test_delete_evaluator_accepts_empty_body(connection, config):
     assert conn.closed
 
 
+def test_request_honours_base_path_in_host(connection, config):
+    conn = connection(json_response({"data": []}))
+
+    client.list_evaluators(dict(config, host="https://example.com/langfuse"))
+
+    assert path_of(conn.calls[0].url) == f"/langfuse{API_PATH}"
+
+
 def test_list_evaluators_sends_cursor_and_limit(connection, config):
     conn = connection(
         json_response(
@@ -235,6 +244,18 @@ def test_iter_evaluators_follows_cursors_without_duplicates(connection, config):
     assert query_params(conn.calls[2].url) == {
         "limit": ["2"],
         "cursor": ["cursor-3"],
+    }
+
+
+def test_iter_evaluators_starts_at_supplied_cursor(connection, config):
+    conn = connection(json_response({"data": [API_EVALUATOR], "meta": {}}))
+
+    evaluators = list(client.iter_evaluators(config, limit=5, cursor="resume-here"))
+
+    assert [item.evaluator_id for item in evaluators] == ["eval-123"]
+    assert query_params(conn.calls[0].url) == {
+        "limit": ["5"],
+        "cursor": ["resume-here"],
     }
 
 
@@ -496,6 +517,40 @@ def test_create_evaluators_reports_transport_failures(connection, config, monkey
     assert results[0]["status"] == 0
     assert results[0]["reason"] == "OSError"
     assert results[0]["body"]["message"] == "boom"
+
+
+def test_create_evaluators_reports_unserializable_payloads(
+    connection, config, monkeypatch
+):
+    monkeypatch.setattr(client, "get_config", lambda: config)
+    conn = connection(json_response(API_EVALUATOR, status=201, reason="Created"))
+
+    results = client.create_evaluators([dict(EVALUATOR_PAYLOAD, passthrough=object())])
+
+    assert len(conn.calls) == 0
+    assert results[0]["status"] == 0
+    assert results[0]["reason"] == "TypeError"
+    assert "not JSON serializable" in results[0]["body"]["message"]
+
+
+def test_credentials_with_control_characters_are_rejected(connection, config):
+    conn = connection()
+    unsafe = dict(config, credentials="abc\r\nX-Injected: 1")
+
+    with pytest.raises(LangfuseError) as excinfo:
+        client.get_evaluator("eval-123", unsafe)
+
+    assert conn.calls == []
+    assert "abc" not in str(excinfo.value)
+
+
+def test_missing_credentials_are_rejected(connection, config):
+    conn = connection()
+
+    with pytest.raises(LangfuseError):
+        client.get_evaluator("eval-123", dict(config, credentials=""))
+
+    assert conn.calls == []
 
 
 # --- connection selection -------------------------------------------------
