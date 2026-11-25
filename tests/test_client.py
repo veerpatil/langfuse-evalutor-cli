@@ -567,7 +567,7 @@ def test_get_connection_uses_https_for_cloud_hosts():
 
 
 def test_get_connection_preserves_environment_base_url():
-    conn = client._get_connection("http://langfuse.local:3000/ignored/path")
+    conn = client._get_connection("http://langfuse.local:3000/langfuse")
 
     try:
         assert isinstance(conn, http.client.HTTPConnection)
