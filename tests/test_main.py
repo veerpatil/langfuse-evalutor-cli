@@ -168,6 +168,17 @@ def test_list_all_starts_at_supplied_cursor(monkeypatch):
     assert captured == {"cursor": "resume"}
 
 
+def test_list_text_output_reports_empty_state(monkeypatch):
+    stub_config(monkeypatch)
+    page = EvaluatorPage(data=(), cursor=None)
+    monkeypatch.setattr(main_module, "list_evaluators", lambda *a, **kw: page)
+
+    code, out, _ = run_cli(monkeypatch, ["list"])
+
+    assert code == 0
+    assert "No evaluators found." in out
+
+
 def test_get_evaluator_by_id(monkeypatch):
     stub_config(monkeypatch)
     monkeypatch.setattr(
@@ -244,11 +255,29 @@ def test_delete_evaluator(monkeypatch):
         lambda evaluator_id, config: captured.update(evaluator_id=evaluator_id),
     )
 
-    code, out, _ = run_cli(monkeypatch, ["delete", "eval-1"])
+    code, out, _ = run_cli(monkeypatch, ["delete", "eval-1", "--yes"])
 
     assert code == 0
     assert captured == {"evaluator_id": "eval-1"}
     assert "Deleted evaluator eval-1" in out
+
+
+def test_delete_evaluator_requires_confirmation(monkeypatch):
+    stub_config(monkeypatch)
+    called = []
+    monkeypatch.setattr(
+        main_module,
+        "delete_evaluator",
+        lambda evaluator_id, config: called.append(evaluator_id),
+    )
+    monkeypatch.setattr(main_module.sys, "stdin", io.StringIO(""))
+
+    code, _, err = run_cli(monkeypatch, ["delete", "eval-1"])
+
+    assert code == 1
+    assert called == []
+    assert "eval-1" in err
+    assert "--yes" in err
 
 
 def test_versions_all_json_output(monkeypatch):
@@ -287,6 +316,39 @@ def test_versions_page_output(monkeypatch):
     assert code == 0
     assert "v1  unknown" in out
     assert "Next cursor: curve" in out
+
+
+def test_versions_text_output_reports_empty_state(monkeypatch):
+    stub_config(monkeypatch)
+    page = EvaluatorVersionPage(data=(), cursor=None)
+    monkeypatch.setattr(
+        main_module,
+        "list_evaluator_versions",
+        lambda *a, **kw: page,
+    )
+
+    code, out, _ = run_cli(monkeypatch, ["versions", "eval-1"])
+
+    assert code == 0
+    assert "No versions found for eval-1." in out
+
+
+def test_api_error_includes_next_step_hint(monkeypatch):
+    stub_config(monkeypatch)
+
+    def raise_auth(*args, **kwargs):
+        raise LangfuseAPIError(
+            401, "Unauthorized", {"message": "bad key"}, "GET", "/evaluators"
+        )
+
+    monkeypatch.setattr(main_module, "list_evaluators", raise_auth)
+
+    code, _, err = run_cli(monkeypatch, ["list"])
+
+    assert code == 1
+    assert "Error:" in err
+    assert "Hint:" in err
+    assert "LANGFUSE_PUBLIC_KEY" in err
 
 
 def test_configuration_errors_exit_non_zero(monkeypatch):

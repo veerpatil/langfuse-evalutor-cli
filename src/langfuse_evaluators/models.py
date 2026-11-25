@@ -99,6 +99,8 @@ class Evaluator:
         data = _as_mapping(payload, "evaluator")
         # Both keys are accepted until the live v2 contract is confirmed;
         # see the note on ``_unwrap_object`` in client.py.
+        # TODO(#2): pin to the documented key and remove the fallback once
+        # verified against a live v2 instance.
         evaluator_id = data.get("id") or data.get("evaluatorId")
         if not isinstance(evaluator_id, str) or not evaluator_id:
             raise LangfuseResponseError(

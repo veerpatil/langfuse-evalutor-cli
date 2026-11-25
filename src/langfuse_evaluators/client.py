@@ -137,6 +137,9 @@ def _unwrap_object(body: Any) -> Any:
     written, so both response shapes are tolerated until the live
     contract can be confirmed. Pin this to the documented shape and drop
     the fallback once verified against a real v2 instance.
+
+    TODO(#2): remove the bare-object fallback once the v2 response shape
+    is confirmed against a live instance.
     """
     if isinstance(body, Mapping) and isinstance(body.get("data"), Mapping):
         return body["data"]
@@ -317,7 +320,7 @@ def create_evaluators(evaluators: list[Mapping[str, Any]]) -> list[dict]:
             results.append(
                 {
                     "status": 0,
-                    "reason": "MalformedRequestOrResponse",
+                    "reason": exc.__class__.__name__,
                     "body": {"message": str(exc)},
                     **_result_identity(name),
                 }
@@ -326,6 +329,19 @@ def create_evaluators(evaluators: list[Mapping[str, Any]]) -> list[dict]:
         except TypeError as exc:
             # A payload may pass validation yet contain a value json.dumps
             # cannot serialise, because unknown keys are passed through.
+            results.append(
+                {
+                    "status": 0,
+                    "reason": exc.__class__.__name__,
+                    "body": {"message": str(exc)},
+                    **_result_identity(name),
+                }
+            )
+            continue
+        except LangfuseError as exc:
+            # Covers credential validation failures (LangfuseError) raised
+            # while building the Authorization header, so an unusable
+            # config is reported per evaluator instead of aborting the batch.
             results.append(
                 {
                     "status": 0,

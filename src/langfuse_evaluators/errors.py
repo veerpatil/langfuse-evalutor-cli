@@ -99,7 +99,11 @@ class LangfuseTransportError(LangfuseError):
         self.method = method
         self.path = path
         self.cause = cause
-        super().__init__(f"{method} {path} failed: {cause.__class__.__name__}: {cause}")
+        super().__init__(
+            f"Could not reach the Langfuse API for {method} {path}; "
+            "check LANGFUSE_HOST and your network connection "
+            f"({cause.__class__.__name__}: {cause})"
+        )
 
 
 class LangfuseResponseError(LangfuseError, ValueError):

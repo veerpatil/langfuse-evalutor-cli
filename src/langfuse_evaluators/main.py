@@ -19,7 +19,7 @@ from .client import (
     update_evaluator,
 )
 from .config import get_config
-from .errors import LangfuseError
+from .errors import LangfuseAPIError, LangfuseError, LangfuseTransportError
 from .evaluators import ALL_EVALUATORS, CODE_EVALUATORS, LLM_AS_JUDGE_EVALUATORS
 
 
@@ -66,9 +66,14 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_json_argument(update_parser)
 
     delete_parser = subparsers.add_parser(
-        "delete", help="Delete an evaluator by its evaluator id"
+        "delete", help="Permanently delete an evaluator by its evaluator id"
     )
     delete_parser.add_argument("evaluator_id")
+    delete_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Delete without prompting; deletion is permanent",
+    )
     _add_json_argument(delete_parser)
 
     versions_parser = subparsers.add_parser(
@@ -168,31 +173,64 @@ def _format_version(version) -> str:
     return f"v{version.version}  {timestamp}"
 
 
-def _list(args: argparse.Namespace) -> int:
-    config = get_config()
-    if args.fetch_all:
-        evaluators = list(iter_evaluators(config, limit=args.limit, cursor=args.cursor))
-        page_meta = None
-        cursor = None
-    else:
-        page = list_evaluators(config, limit=args.limit, cursor=args.cursor)
-        evaluators = list(page.data)
-        page_meta = dict(page.meta)
-        cursor = page.cursor
+def _render_listing(
+    *,
+    fetch_all: bool,
+    fetch_page,
+    iter_items,
+    formatter,
+    empty_message: str,
+    json_output: bool,
+) -> int:
+    """Render one page or every page of a cursor-paginated resource.
 
-    if args.json:
-        payload = {"data": [item.to_dict() for item in evaluators]}
+    ``fetch_page`` fetches a single page and ``iter_items`` yields every
+    item across pages. Both CLI listing commands share this scaffolding;
+    only the fetch calls, formatter, and empty-state message differ.
+    """
+    if fetch_all:
+        items = list(iter_items())
+        page_meta = None
+        next_cursor = None
+    else:
+        page = fetch_page()
+        items = list(page.data)
+        page_meta = dict(page.meta)
+        next_cursor = page.cursor
+
+    if json_output:
+        payload = {"data": [item.to_dict() for item in items]}
         if page_meta is not None:
             payload["meta"] = page_meta
-            payload["cursor"] = cursor
+            payload["cursor"] = next_cursor
         print(json.dumps(payload, indent=2))
         return 0
 
-    for evaluator in evaluators:
-        print(_format_evaluator(evaluator))
-    if cursor:
-        print(f"\nNext cursor: {cursor}")
+    if not items:
+        print(empty_message)
+        return 0
+
+    for item in items:
+        print(formatter(item))
+    if next_cursor:
+        print(f"\nNext cursor: {next_cursor}")
     return 0
+
+
+def _list(args: argparse.Namespace) -> int:
+    config = get_config()
+    return _render_listing(
+        fetch_all=args.fetch_all,
+        fetch_page=lambda: list_evaluators(
+            config, limit=args.limit, cursor=args.cursor
+        ),
+        iter_items=lambda: iter_evaluators(
+            config, limit=args.limit, cursor=args.cursor
+        ),
+        formatter=_format_evaluator,
+        empty_message="No evaluators found.",
+        json_output=args.json,
+    )
 
 
 def _get(args: argparse.Namespace) -> int:
@@ -225,7 +263,28 @@ def _update(args: argparse.Namespace) -> int:
     return 0
 
 
+def _confirm_delete(evaluator_id: str, assume_yes: bool) -> bool:
+    """Return whether a permanent delete should proceed.
+
+    Deletion has no undo path, so non-interactive runs must opt in with
+    ``--yes`` and interactive runs must confirm the evaluator id.
+    """
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        print(
+            f"Refusing to delete {evaluator_id} without confirmation; "
+            "pass --yes to delete it permanently.",
+            file=sys.stderr,
+        )
+        return False
+    answer = input(f"Permanently delete evaluator {evaluator_id}? [y/N] ")
+    return answer.strip().lower() in {"y", "yes"}
+
+
 def _delete(args: argparse.Namespace) -> int:
+    if not _confirm_delete(args.evaluator_id, args.yes):
+        return 1
     delete_evaluator(args.evaluator_id, get_config())
     if args.json:
         print(json.dumps({"deleted": args.evaluator_id}, indent=2))
@@ -236,35 +295,18 @@ def _delete(args: argparse.Namespace) -> int:
 
 def _versions(args: argparse.Namespace) -> int:
     config = get_config()
-    if args.fetch_all:
-        versions = list(
-            iter_evaluator_versions(
-                args.evaluator_id, config, limit=args.limit, cursor=args.cursor
-            )
-        )
-        page_meta = None
-        cursor = None
-    else:
-        page = list_evaluator_versions(
+    return _render_listing(
+        fetch_all=args.fetch_all,
+        fetch_page=lambda: list_evaluator_versions(
             args.evaluator_id, config, limit=args.limit, cursor=args.cursor
-        )
-        versions = list(page.data)
-        page_meta = dict(page.meta)
-        cursor = page.cursor
-
-    if args.json:
-        payload = {"data": [item.to_dict() for item in versions]}
-        if page_meta is not None:
-            payload["meta"] = page_meta
-            payload["cursor"] = cursor
-        print(json.dumps(payload, indent=2))
-        return 0
-
-    for version in versions:
-        print(_format_version(version))
-    if cursor:
-        print(f"\nNext cursor: {cursor}")
-    return 0
+        ),
+        iter_items=lambda: iter_evaluator_versions(
+            args.evaluator_id, config, limit=args.limit, cursor=args.cursor
+        ),
+        formatter=_format_version,
+        empty_message=f"No versions found for {args.evaluator_id}.",
+        json_output=args.json,
+    )
 
 
 COMMANDS = {
@@ -277,6 +319,28 @@ COMMANDS = {
 }
 
 
+_ERROR_HINTS = {
+    "authentication_error": (
+        "Check LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY (or your .env file)."
+    ),
+    "permission_error": (
+        "Check that the API keys have permission to manage evaluators."
+    ),
+    "not_found": "Verify the evaluator id with `create-evaluators list`.",
+    "rate_limit_error": "Wait a moment and retry the request.",
+    "validation_error": "Check the request payload and try again.",
+}
+
+
+def _error_hint(exc: BaseException) -> str | None:
+    """Return a next-step hint for the common error kinds."""
+    if isinstance(exc, LangfuseAPIError):
+        return _ERROR_HINTS.get(exc.error_kind)
+    if isinstance(exc, LangfuseTransportError):
+        return "Check LANGFUSE_HOST and your network connection."
+    return None
+
+
 def main():
     parser = _build_parser()
     args = parser.parse_args()
@@ -285,6 +349,9 @@ def main():
         exit_code = COMMANDS[args.command](args)
     except (LangfuseError, RuntimeError, TypeError, ValueError, OSError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        hint = _error_hint(exc)
+        if hint:
+            print(f"Hint: {hint}", file=sys.stderr)
         sys.exit(1)
 
     sys.exit(exit_code)

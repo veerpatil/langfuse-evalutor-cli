@@ -394,6 +394,7 @@ def test_transport_errors_are_wrapped(connection, config):
 
     assert isinstance(excinfo.value.cause, OSError)
     assert "connection refused" in str(excinfo.value)
+    assert "Could not reach the Langfuse API" in str(excinfo.value)
     assert config["credentials"] not in str(excinfo.value)
 
 
@@ -505,6 +506,7 @@ def test_create_evaluators_reports_invalid_payloads(connection, config, monkeypa
     assert len(conn.calls) == 0
     assert results[0]["status"] == 0
     assert results[0]["name"] == "Missing type"
+    assert results[0]["reason"] == "ValueError"
     assert "Unsupported evaluator type" in results[0]["body"]["message"]
 
 
@@ -531,6 +533,18 @@ def test_create_evaluators_reports_unserializable_payloads(
     assert results[0]["status"] == 0
     assert results[0]["reason"] == "TypeError"
     assert "not JSON serializable" in results[0]["body"]["message"]
+
+
+def test_create_evaluators_reports_credential_failures(connection, config, monkeypatch):
+    monkeypatch.setattr(client, "get_config", lambda: dict(config, credentials=""))
+    conn = connection()
+
+    results = client.create_evaluators([EVALUATOR_PAYLOAD])
+
+    assert conn.calls == []
+    assert results[0]["status"] == 0
+    assert results[0]["reason"] == "LangfuseError"
+    assert "credentials" in results[0]["body"]["message"].lower()
 
 
 def test_credentials_with_control_characters_are_rejected(connection, config):

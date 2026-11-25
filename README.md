@@ -72,9 +72,10 @@ LANGFUSE_HOST=http://localhost:3000
 ```
 
 `LANGFUSE_HOST` defaults to `http://localhost:3000` if it is not set. Any base
-URL works, including self-hosted instances and path-mounted deployments; a
-path prefix in the host is preserved, so `https://example.com/langfuse`
-targets `https://example.com/langfuse/api/public/v2/evaluators`.
+URL with an `http://` or `https://` scheme works, including self-hosted
+instances and path-mounted deployments; a path prefix in the host is preserved,
+so `https://example.com/langfuse` targets
+`https://example.com/langfuse/api/public/v2/evaluators`.
 
 ## Usage
 
@@ -128,8 +129,12 @@ uv run create-evaluators list --all --json   # machine-readable output
 ```bash
 uv run create-evaluators get <evaluator-id>
 uv run create-evaluators update <evaluator-id> --file update.json
-uv run create-evaluators delete <evaluator-id>
+uv run create-evaluators delete <evaluator-id>           # prompts to confirm
+uv run create-evaluators delete <evaluator-id> --yes     # non-interactive
 ```
+
+Deleting an evaluator is permanent and has no undo path, so `delete` prompts
+for confirmation and requires `--yes` when standard input is not a terminal.
 
 `update.json` is a JSON object containing only the fields to change, for
 example:
