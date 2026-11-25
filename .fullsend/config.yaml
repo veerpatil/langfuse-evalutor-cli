@@ -13,6 +13,38 @@ tracker:
 runtime: pi
 roles:
     - triage
+    - coder
+    - review
+    - fix
+    - retro
+    - prioritize
+agents:
+    - name: triage
+      model: gateway/rits/zai-org/glm-5-3
+    - name: code
+      model: gateway/rits/deepseek-ai/DeepSeek-V4.1-Flash-1017
+    - name: review
+      model: gateway/rits/zai-org/glm-5-3
+      subagents:
+          # Map each pr-review persona away from its frontmatter default
+          # (model: opus, which resolves to the unavailable anthropic-vertex
+          # provider) to the model this run actually serves (ADR 104).
+          correctness: gateway/rits/zai-org/glm-5-3
+          security: gateway/rits/zai-org/glm-5-3
+          security-triage: gateway/rits/zai-org/glm-5-3
+          style-conventions: gateway/rits/zai-org/glm-5-3
+          intent-coherence: gateway/rits/zai-org/glm-5-3
+          docs-currency: gateway/rits/zai-org/glm-5-3
+          cross-repo-contracts: gateway/rits/zai-org/glm-5-3
+          challenger: gateway/rits/zai-org/glm-5-3
+          risk-assessment: gateway/rits/zai-org/glm-5-3
+          user-experience: gateway/rits/zai-org/glm-5-3
+    - name: fix
+      model: gateway/rits/deepseek-ai/DeepSeek-V4.1-Flash-1017
+    - name: retro
+      model: gateway/rits/zai-org/glm-5-3
+    - name: prioritize
+      model: gateway/rits/zai-org/glm-5-3
 allowed_remote_resources:
     - https://raw.githubusercontent.com/fullsend-ai/fullsend/
     - https://raw.githubusercontent.com/fullsend-ai/agents/
@@ -22,4 +54,6 @@ inference:
         auth: api-key
         models:
             rits/zai-org/glm-5-3:
+                api: openai-completions
+            rits/deepseek-ai/DeepSeek-V4.1-Flash-1017:
                 api: openai-completions
