@@ -678,3 +678,86 @@ def test_get_connection_preserves_environment_base_url():
         assert conn.port == 3000
     finally:
         conn.close()
+
+
+def test_parse_host_rejects_embedded_credentials():
+    with pytest.raises(LangfuseError):
+        client._parse_host("https://user:pass@example.com")
+
+
+def test_parse_host_rejects_non_numeric_port():
+    with pytest.raises(LangfuseError):
+        client._parse_host("https://example.com:not-a-port")
+
+
+def test_parse_host_rejects_query_and_fragment():
+    with pytest.raises(LangfuseError):
+        client._parse_host("https://example.com/langfuse?region=eu")
+
+
+def test_request_reports_an_unusable_host_as_a_transport_error(
+    config, monkeypatch
+):
+    def boom(host):
+        raise ValueError("Port could not be cast to integer value as 'abc'")
+
+    monkeypatch.setattr(client, "_get_connection", boom)
+
+    with pytest.raises(LangfuseTransportError):
+        client.get_evaluator("eval-1", config)
+
+
+def test_request_warns_when_credentials_cross_a_cleartext_remote_host(
+    connection, config, capsys, monkeypatch
+):
+    monkeypatch.setattr(client, "_CLEARTEXT_WARNED", False)
+    connection(json_response(API_EVALUATOR))
+
+    client.get_evaluator("eval-1", dict(config, host="http://langfuse.example.com"))
+
+    assert "unencrypted" in capsys.readouterr().err
+
+
+def test_request_does_not_warn_for_a_loopback_http_host(
+    connection, config, capsys, monkeypatch
+):
+    monkeypatch.setattr(client, "_CLEARTEXT_WARNED", False)
+    connection(json_response(API_EVALUATOR))
+
+    client.get_evaluator("eval-1", config)
+
+    assert "unencrypted" not in capsys.readouterr().err
+
+
+def test_iter_evaluators_warns_when_a_repeated_cursor_truncates_the_listing(
+    connection, config, capsys
+):
+    connection(
+        json_response(
+            {
+                "data": [dict(API_EVALUATOR, id="eval-1")],
+                "meta": {"cursor": "cursor-2"},
+            }
+        ),
+        json_response(
+            {
+                "data": [dict(API_EVALUATOR, id="eval-2")],
+                "meta": {"cursor": "cursor-2"},
+            }
+        ),
+    )
+
+    list(client.iter_evaluators(config))
+
+    assert "may be incomplete" in capsys.readouterr().err
+
+
+def test_create_evaluators_reports_a_string_name_for_a_non_string_payload(
+    config, monkeypatch
+):
+    monkeypatch.setattr(client, "get_config", lambda: config)
+
+    results = client.create_evaluators([{"name": 42, "type": "code"}])
+
+    assert results[0]["name"] == ""
+    assert results[0]["evaluatorId"] is None

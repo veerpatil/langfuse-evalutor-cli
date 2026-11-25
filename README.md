@@ -71,12 +71,16 @@ LANGFUSE_SECRET_KEY=your_secret_key
 LANGFUSE_HOST=http://localhost:3000
 ```
 
-`LANGFUSE_HOST` defaults to `http://localhost:3000` if it is not set. Any base
-URL with an `http://` or `https://` scheme works, including self-hosted
-instances and path-mounted deployments; a path prefix in the host is preserved,
-so `https://example.com/langfuse` targets
-`https://example.com/langfuse/api/public/v2/evaluators`. A host without an
-`http://` or `https://` scheme is rejected before any request is sent.
+`LANGFUSE_HOST` defaults to `http://localhost:3000` if it is not set. A base
+URL with an `http://` or `https://` scheme, a plain `host[:port]`, and an
+optional path prefix work, so self-hosted instances and path-mounted
+deployments are supported and `https://example.com/langfuse` targets
+`https://example.com/langfuse/api/public/v2/evaluators`. Query strings,
+fragments, embedded userinfo, and non-numeric ports are not supported, and a
+host without an `http://` or `https://` scheme is rejected before any request
+is sent. Use `http://` only for a loopback host or a TLS-terminating local
+proxy: the API keys are sent as Basic auth on every request, so a remote
+plaintext host exposes them, and the CLI warns when it sees one.
 
 ## Usage
 
@@ -234,6 +238,10 @@ endpoint. See the release notes below for what changed.
 - Errors now expose a structured `body` plus a stable `error_kind`. Code that
   matched on message strings should switch to `error_kind` or
   `LangfuseAPIError.status_code`.
+- `LANGFUSE_HOST` now requires an explicit `http://` or `https://` scheme.
+  `0.1.0` accepted a schemeless value such as `localhost:3000`; the client now
+  rejects it before sending a request, because a schemeless value produces a
+  malformed request line. Prefix the value with the scheme you mean.
 - The `create-evaluators` entry point keeps its historical name for backward
   compatibility even though it now also manages evaluators through the `list`,
   `get`, `update`, `delete`, and `versions` subcommands. A neutral alias is

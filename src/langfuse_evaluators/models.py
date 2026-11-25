@@ -140,7 +140,10 @@ class EvaluatorVersion:
             raise LangfuseResponseError(
                 "Evaluator version payload is missing an integer 'version'"
             )
-        payload_id = data.get("evaluatorId") or data.get("id")
+        # Only an explicit ``evaluatorId`` is trusted here: a version row's
+        # own ``id`` is the id of that row, not of the evaluator it belongs
+        # to, so falling back to it would silently mislabel a version.
+        payload_id = _optional_str(data.get("evaluatorId"))
         return cls(
             evaluator_id=_optional_str(payload_id) or evaluator_id,
             version=version,

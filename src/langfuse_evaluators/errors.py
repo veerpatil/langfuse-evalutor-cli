@@ -102,7 +102,7 @@ class LangfuseTransportError(LangfuseError):
         super().__init__(
             f"Could not reach the Langfuse API for {method} {path}; "
             "check LANGFUSE_HOST and your network connection "
-            f"({cause.__class__.__name__}: {cause})"
+            f"({cause.__class__.__name__})"
         )
 
 

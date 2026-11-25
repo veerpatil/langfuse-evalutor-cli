@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 from urllib.parse import ParseResult, quote, urlencode, urlparse
@@ -35,19 +36,68 @@ TIMEOUT_SECONDS = 30
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 100
 
+_CLEARTEXT_WARNED = False
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _warn_once(message: str) -> None:
+    """Write a warning to stderr so stdout stays machine-readable."""
+    print(f"Warning: {message}", file=sys.stderr)
+
 
 def _parse_host(host_url: str) -> ParseResult:
-    """Parse ``LANGFUSE_HOST``, rejecting hosts without an http(s) scheme.
+    """Parse ``LANGFUSE_HOST``, rejecting unsupported or unsafe hosts.
 
     A schemeless host (``example.com``) produces an empty netloc, so the
     request line ends up carrying the bare host instead of an origin-form
     path and servers reject or misroute it. Fail before the request is
     sent. The value is never echoed because a host can embed credentials.
+
+    Userinfo, query strings, fragments, and non-numeric ports are also
+    rejected: the first leaks a password into transport error messages,
+    the middle two are silently dropped when the request URL is built,
+    and the last raises a raw ``http.client.InvalidURL``.
     """
     parsed = urlparse(host_url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise LangfuseError("LANGFUSE_HOST must start with http:// or https://")
+    if parsed.username is not None or parsed.password is not None:
+        raise LangfuseError(
+            "LANGFUSE_HOST must not embed credentials; set LANGFUSE_PUBLIC_KEY "
+            "and LANGFUSE_SECRET_KEY instead"
+        )
+    if parsed.query or parsed.fragment:
+        raise LangfuseError(
+            "LANGFUSE_HOST must not contain a query string or fragment; only a "
+            "host and an optional path prefix are supported"
+        )
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise LangfuseError("LANGFUSE_HOST has an invalid port") from exc
     return parsed
+
+
+def _warn_cleartext_credentials(host_url: str) -> None:
+    """Warn once when Basic credentials would cross the network unencrypted.
+
+    ``http://`` is accepted for local development, but a remote plaintext
+    host exposes the key pair to anyone on the path, so say so instead of
+    sending it silently.
+    """
+    global _CLEARTEXT_WARNED
+    if _CLEARTEXT_WARNED:
+        return
+    parsed = _parse_host(host_url)
+    if parsed.scheme != "http":
+        return
+    if (parsed.hostname or "").lower() in _LOOPBACK_HOSTS:
+        return
+    _CLEARTEXT_WARNED = True
+    _warn_once(
+        "LANGFUSE_HOST uses http:// for a non-loopback host, so the API keys "
+        "are sent unencrypted; use https:// or a TLS-terminating local proxy."
+    )
 
 
 def _get_connection(host_url: str) -> http.client.HTTPConnection:
@@ -129,6 +179,7 @@ def _request(
     structured payload is required.
     """
     url = _build_url(config["host"], path, query)
+    _warn_cleartext_credentials(config["host"])
 
     headers = {
         "Accept": "application/json",
@@ -139,8 +190,12 @@ def _request(
         payload = json.dumps(body)
         headers["Content-Type"] = "application/json"
 
-    conn = _get_connection(config["host"])
+    conn = None
     try:
+        # Connection construction is inside the try so a host that parses but
+        # cannot be used (a non-numeric port, for example) is reported as a
+        # transport failure instead of leaking ``http.client`` internals.
+        conn = _get_connection(config["host"])
         conn.request(method, url, body=payload, headers=headers)
         response = conn.getresponse()
         # A non-UTF-8 body must not escape the transport wrapping, so
@@ -148,10 +203,11 @@ def _request(
         raw_body = response.read().decode("utf-8", errors="replace")
         status = response.status
         reason = response.reason
-    except (OSError, http.client.HTTPException) as exc:
+    except (OSError, ValueError, http.client.HTTPException) as exc:
         raise LangfuseTransportError(method, path, exc) from exc
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     if not 200 <= status < 300:
         raise LangfuseAPIError(
@@ -202,7 +258,7 @@ class _UnreadableCreateResponse(LangfuseResponseError):
     reason_token = "ResponseParseError"
 
     def __init__(self, status: int, reason: str, cause: BaseException) -> None:
-        self.status = status
+        self.status_code = status
         self.reason = reason
         super().__init__(
             f"The evaluator was created (HTTP {status} {reason or 'response'}) "
@@ -214,7 +270,7 @@ class _UnreadableCreateResponse(LangfuseResponseError):
     def to_result(self) -> dict:
         """Return the historical CLI result shape for this failure."""
         return {
-            "status": self.status,
+            "status": self.status_code,
             "reason": self.reason_token,
             "body": {"message": str(self)},
         }
@@ -307,7 +363,9 @@ def _iter_pages(
     ``fetch_page`` requests one page starting at the given cursor and
     ``key`` identifies an item for de-duplication. Iteration stops when
     the API stops returning a cursor or repeats a cursor it already
-    returned, which keeps a misbehaving page from looping forever.
+    returned, which keeps a misbehaving page from looping forever. A
+    repeated cursor also emits a warning: a silently truncated listing is
+    indistinguishable from a complete one.
     """
     seen_keys: set[Any] = set()
     # Seed the set with the caller's cursor so an API that echoes it back
@@ -323,7 +381,13 @@ def _iter_pages(
             seen_keys.add(marker)
             yield item
 
-        if not page.cursor or page.cursor in seen_cursors:
+        if not page.cursor:
+            return
+        if page.cursor in seen_cursors:
+            _warn_once(
+                "the Langfuse API repeated a pagination cursor, so the listing "
+                "stopped early and may be incomplete"
+            )
             return
         seen_cursors.add(page.cursor)
         cursor = page.cursor
@@ -387,7 +451,7 @@ def create_evaluators(evaluators: list[Mapping[str, Any]]) -> list[dict]:
     config = get_config()
     results = []
     for evaluator in evaluators:
-        name = evaluator.get("name", "") if isinstance(evaluator, Mapping) else ""
+        name = _result_name(evaluator.get("name") if isinstance(evaluator, Mapping) else None)
         try:
             status, reason, created = _create_evaluator_with_status(evaluator, config)
         except LangfuseAPIError as exc:
@@ -416,6 +480,11 @@ def create_evaluators(evaluators: list[Mapping[str, Any]]) -> list[dict]:
             }
         )
     return results
+
+
+def _result_name(value: Any) -> str:
+    """Coerce a payload name to the string the legacy result contract carries."""
+    return value if isinstance(value, str) else ""
 
 
 def _failure_result(exc: BaseException) -> dict:

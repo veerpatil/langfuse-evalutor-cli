@@ -314,10 +314,29 @@ def test_delete_evaluator_declines_interactively(monkeypatch):
     )
     monkeypatch.setattr(main_module.sys, "stdin", FakeTty("n\n"))
 
-    code, _, _ = run_cli(monkeypatch, ["delete", "eval-1"])
+    code, out, _ = run_cli(monkeypatch, ["delete", "eval-1"])
 
-    assert code == 1
+    # A deliberate decline is not a failure, and it says so.
+    assert code == 0
     assert called == []
+    assert "Deletion cancelled." in out
+
+
+def test_delete_evaluator_treats_end_of_input_as_a_decline(monkeypatch):
+    stub_config(monkeypatch)
+    called = []
+    monkeypatch.setattr(
+        main_module,
+        "delete_evaluator",
+        lambda evaluator_id, config: called.append(evaluator_id),
+    )
+    monkeypatch.setattr(main_module.sys, "stdin", FakeTty(""))
+
+    code, out, _ = run_cli(monkeypatch, ["delete", "eval-1"])
+
+    assert code == 0
+    assert called == []
+    assert "Deletion cancelled." in out
 
 
 def test_versions_all_json_output(monkeypatch):
@@ -448,3 +467,74 @@ def test_json_flag_before_subcommand_is_preserved(monkeypatch):
 
     assert code == 0
     assert json.loads(out)["data"][0]["id"] == "eval-1"
+
+
+def test_list_reports_the_end_of_pagination_for_a_cursor(monkeypatch):
+    stub_config(monkeypatch)
+    monkeypatch.setattr(
+        main_module,
+        "list_evaluators",
+        lambda config, limit, cursor: EvaluatorPage(data=(), cursor=None),
+    )
+
+    code, out, _ = run_cli(monkeypatch, ["list", "--cursor", "tail"])
+
+    assert code == 0
+    assert "No further evaluators for this cursor." in out
+
+
+def test_list_all_prints_a_progress_line_on_stderr(monkeypatch):
+    stub_config(monkeypatch)
+    monkeypatch.setattr(
+        main_module,
+        "iter_evaluators",
+        lambda config, limit, cursor: iter([EVALUATOR]),
+    )
+
+    code, out, err = run_cli(monkeypatch, ["list", "--all"])
+
+    assert code == 0
+    assert "Fetching all evaluators" in err
+    assert "Fetching all evaluators" not in out
+
+
+def test_next_cursor_line_explains_the_flag(monkeypatch):
+    stub_config(monkeypatch)
+    monkeypatch.setattr(
+        main_module,
+        "list_evaluators",
+        lambda config, limit, cursor: EvaluatorPage(
+            data=(EVALUATOR,), cursor="next-cursor"
+        ),
+    )
+
+    code, out, _ = run_cli(monkeypatch, ["list"])
+
+    assert code == 0
+    assert "--cursor next-cursor" in out
+
+
+def test_update_reports_a_malformed_payload_file(monkeypatch, tmp_path):
+    stub_config(monkeypatch)
+    payload = tmp_path / "changes.json"
+    payload.write_text("{not json")
+
+    code, _, err = run_cli(monkeypatch, ["update", "eval-1", "--file", str(payload)])
+
+    assert code == 1
+    assert str(payload) in err
+    assert "not valid JSON" in err
+
+
+def test_conflict_error_includes_a_next_step_hint(monkeypatch):
+    stub_config(monkeypatch)
+
+    def conflict(evaluator_id, config):
+        raise LangfuseAPIError(409, "Conflict", {"message": "exists"}, "GET", "/x")
+
+    monkeypatch.setattr(main_module, "get_evaluator", conflict)
+
+    code, _, err = run_cli(monkeypatch, ["get", "eval-1"])
+
+    assert code == 1
+    assert "create-evaluators update" in err

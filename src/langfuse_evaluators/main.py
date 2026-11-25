@@ -184,14 +184,24 @@ def _render_listing(
     formatter: Callable[[Evaluator | EvaluatorVersion], str],
     empty_message: str,
     json_output: bool,
+    cursor: str | None = None,
+    empty_message_for_cursor: str = "",
+    progress_message: str = "",
 ) -> int:
     """Render one page or every page of a cursor-paginated resource.
 
     ``fetch_page`` fetches a single page and ``iter_items`` yields every
     item across pages. Both CLI listing commands share this scaffolding;
-    only the fetch calls, formatter, and empty-state message differ.
+    only the fetch calls, formatter, and empty-state messages differ.
+
+    ``iter_items`` may issue many sequential requests, so a progress line
+    goes to stderr first to keep an interactive run from looking hung,
+    and an empty result under ``--cursor`` is reported as the end of the
+    pagination rather than an empty account.
     """
     if fetch_all:
+        if progress_message:
+            print(progress_message, file=sys.stderr)
         items = list(iter_items())
         page_meta = None
         next_cursor = None
@@ -210,13 +220,16 @@ def _render_listing(
         return 0
 
     if not items:
-        print(empty_message)
+        print(empty_message_for_cursor if cursor else empty_message)
         return 0
 
     for item in items:
         print(formatter(item))
     if next_cursor:
-        print(f"\nNext cursor: {next_cursor}")
+        print(
+            f"\nNext cursor: {next_cursor} "
+            f"(pass --cursor {next_cursor} to see more results)"
+        )
     return 0
 
 
@@ -233,11 +246,15 @@ def _list(args: argparse.Namespace) -> int:
         formatter=_format_evaluator,
         empty_message="No evaluators found.",
         json_output=args.json,
+        cursor=args.cursor,
+        empty_message_for_cursor="No further evaluators for this cursor.",
+        progress_message="Fetching all evaluators...",
     )
 
 
 def _get(args: argparse.Namespace) -> int:
-    evaluator = get_evaluator(args.evaluator_id, get_config())
+    config = get_config()
+    evaluator = get_evaluator(args.evaluator_id, config)
     if args.json:
         print(json.dumps(evaluator.to_dict(), indent=2))
     else:
@@ -246,7 +263,17 @@ def _get(args: argparse.Namespace) -> int:
 
 
 def _load_update_payload(path: Path) -> dict:
-    changes = json.loads(path.read_text())
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        raise OSError(f"Could not read update payload {path}: {exc}") from exc
+    try:
+        changes = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Update payload in {path} is not valid JSON "
+            f"({exc.msg} at line {exc.lineno} column {exc.colno})"
+        ) from exc
     if not isinstance(changes, dict):
         # Keep payload-shape errors on the ValueError idiom used by
         # models.validate_evaluator_payload for non-mapping payloads.
@@ -258,7 +285,8 @@ def _load_update_payload(path: Path) -> dict:
 
 def _update(args: argparse.Namespace) -> int:
     changes = _load_update_payload(args.file)
-    evaluator = update_evaluator(args.evaluator_id, changes, get_config())
+    config = get_config()
+    evaluator = update_evaluator(args.evaluator_id, changes, config)
     if args.json:
         print(json.dumps(evaluator.to_dict(), indent=2))
     else:
@@ -266,11 +294,13 @@ def _update(args: argparse.Namespace) -> int:
     return 0
 
 
-def _confirm_delete(evaluator_id: str, assume_yes: bool) -> bool:
+def _confirm_delete(evaluator_id: str, assume_yes: bool) -> bool | None:
     """Return whether a permanent delete should proceed.
 
     Deletion has no undo path, so non-interactive runs must opt in with
     ``--yes`` and interactive runs must confirm the evaluator id.
+    ``None`` means the request was refused because it could not be
+    confirmed, which is an error; ``False`` is a deliberate decline.
     """
     if assume_yes:
         return True
@@ -280,15 +310,26 @@ def _confirm_delete(evaluator_id: str, assume_yes: bool) -> bool:
             "pass --yes to delete it permanently.",
             file=sys.stderr,
         )
+        return None
+    try:
+        answer = input(f"Permanently delete evaluator {evaluator_id}? [y/N] ")
+    except EOFError:
+        # End-of-input (Ctrl-D) is not an answer; treat it as a decline
+        # instead of letting a traceback escape the CLI.
+        print()
         return False
-    answer = input(f"Permanently delete evaluator {evaluator_id}? [y/N] ")
     return answer.strip().lower() in {"y", "yes"}
 
 
 def _delete(args: argparse.Namespace) -> int:
-    if not _confirm_delete(args.evaluator_id, args.yes):
+    confirmation = _confirm_delete(args.evaluator_id, args.yes)
+    if confirmation is None:
         return 1
-    delete_evaluator(args.evaluator_id, get_config())
+    if not confirmation:
+        print("Deletion cancelled.")
+        return 0
+    config = get_config()
+    delete_evaluator(args.evaluator_id, config)
     if args.json:
         print(json.dumps({"deleted": args.evaluator_id}, indent=2))
     else:
@@ -309,6 +350,9 @@ def _versions(args: argparse.Namespace) -> int:
         formatter=_format_version,
         empty_message=f"No versions found for {args.evaluator_id}.",
         json_output=args.json,
+        cursor=args.cursor,
+        empty_message_for_cursor="No further versions for this cursor.",
+        progress_message=f"Fetching all versions for {args.evaluator_id}...",
     )
 
 
@@ -331,6 +375,10 @@ _ERROR_HINTS = {
     ),
     "not_found": "Verify the evaluator id with `create-evaluators list`.",
     "rate_limit_error": "Wait a moment and retry the request.",
+    "conflict": (
+        "An evaluator with that name already exists; check it with "
+        "`create-evaluators list` and change it with `create-evaluators update`."
+    ),
     "validation_error": "Check the request payload and try again.",
 }
 
