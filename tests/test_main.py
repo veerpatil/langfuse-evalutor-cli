@@ -8,7 +8,7 @@ import json
 import sys
 
 from langfuse_evaluators import main as main_module
-from langfuse_evaluators.errors import LangfuseAPIError
+from langfuse_evaluators.errors import LangfuseAPIError, LangfuseTransportError
 from langfuse_evaluators.models import (
     Evaluator,
     EvaluatorPage,
@@ -280,6 +280,46 @@ def test_delete_evaluator_requires_confirmation(monkeypatch):
     assert "--yes" in err
 
 
+class FakeTty(io.StringIO):
+    """An interactive stdin whose ``input()`` answer is scripted."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def test_delete_evaluator_confirms_interactively(monkeypatch):
+    stub_config(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        main_module,
+        "delete_evaluator",
+        lambda evaluator_id, config: captured.update(evaluator_id=evaluator_id),
+    )
+    monkeypatch.setattr(main_module.sys, "stdin", FakeTty("y\n"))
+
+    code, out, _ = run_cli(monkeypatch, ["delete", "eval-1"])
+
+    assert code == 0
+    assert captured == {"evaluator_id": "eval-1"}
+    assert "Deleted evaluator eval-1" in out
+
+
+def test_delete_evaluator_declines_interactively(monkeypatch):
+    stub_config(monkeypatch)
+    called = []
+    monkeypatch.setattr(
+        main_module,
+        "delete_evaluator",
+        lambda evaluator_id, config: called.append(evaluator_id),
+    )
+    monkeypatch.setattr(main_module.sys, "stdin", FakeTty("n\n"))
+
+    code, _, _ = run_cli(monkeypatch, ["delete", "eval-1"])
+
+    assert code == 1
+    assert called == []
+
+
 def test_versions_all_json_output(monkeypatch):
     stub_config(monkeypatch)
     version = EvaluatorVersion(
@@ -349,6 +389,42 @@ def test_api_error_includes_next_step_hint(monkeypatch):
     assert "Error:" in err
     assert "Hint:" in err
     assert "LANGFUSE_PUBLIC_KEY" in err
+
+
+def test_missing_v2_endpoint_hint_suggests_the_0_1_0_pin(monkeypatch):
+    stub_config(monkeypatch)
+
+    def raise_not_found(*args, **kwargs):
+        raise LangfuseAPIError(
+            404,
+            "Not Found",
+            {"message": "route not found"},
+            "GET",
+            main_module.API_PATH,
+        )
+
+    monkeypatch.setattr(main_module, "list_evaluators", raise_not_found)
+
+    code, _, err = run_cli(monkeypatch, ["list"])
+
+    assert code == 1
+    assert "0.1.0" in err
+    assert "v2 evaluators endpoint" in err
+
+
+def test_transport_error_hint_is_not_duplicated(monkeypatch):
+    stub_config(monkeypatch)
+
+    def raise_transport(*args, **kwargs):
+        raise LangfuseTransportError("GET", "list evaluators", OSError("down"))
+
+    monkeypatch.setattr(main_module, "list_evaluators", raise_transport)
+
+    code, _, err = run_cli(monkeypatch, ["list"])
+
+    assert code == 1
+    assert "Hint:" not in err
+    assert err.count("LANGFUSE_HOST") == 1
 
 
 def test_configuration_errors_exit_non_zero(monkeypatch):

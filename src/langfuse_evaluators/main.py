@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from .client import (
+    API_PATH,
     DEFAULT_PAGE_SIZE,
     create_evaluators,
     delete_evaluator,
@@ -19,8 +21,9 @@ from .client import (
     update_evaluator,
 )
 from .config import get_config
-from .errors import LangfuseAPIError, LangfuseError, LangfuseTransportError
+from .errors import LangfuseAPIError, LangfuseError
 from .evaluators import ALL_EVALUATORS, CODE_EVALUATORS, LLM_AS_JUDGE_EVALUATORS
+from .models import Evaluator, EvaluatorPage, EvaluatorVersion, EvaluatorVersionPage
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -163,12 +166,12 @@ def _create(args: argparse.Namespace) -> int:
     return 1 if failed > 0 else 0
 
 
-def _format_evaluator(evaluator) -> str:
+def _format_evaluator(evaluator: Evaluator) -> str:
     version = evaluator.version if evaluator.version is not None else "?"
     return f"{evaluator.evaluator_id}  {evaluator.name}  v{version}"
 
 
-def _format_version(version) -> str:
+def _format_version(version: EvaluatorVersion) -> str:
     timestamp = version.created_at or "unknown"
     return f"v{version.version}  {timestamp}"
 
@@ -176,9 +179,9 @@ def _format_version(version) -> str:
 def _render_listing(
     *,
     fetch_all: bool,
-    fetch_page,
-    iter_items,
-    formatter,
+    fetch_page: Callable[[], EvaluatorPage | EvaluatorVersionPage],
+    iter_items: Callable[[], Iterator[Evaluator | EvaluatorVersion]],
+    formatter: Callable[[Evaluator | EvaluatorVersion], str],
     empty_message: str,
     json_output: bool,
 ) -> int:
@@ -333,11 +336,19 @@ _ERROR_HINTS = {
 
 
 def _error_hint(exc: BaseException) -> str | None:
-    """Return a next-step hint for the common error kinds."""
+    """Return a next-step hint for the common error kinds.
+
+    ``LangfuseTransportError`` is not mapped here because its message
+    already tells the user to check ``LANGFUSE_HOST`` and the network, so
+    a hint would repeat the same wording on the next line.
+    """
     if isinstance(exc, LangfuseAPIError):
+        if exc.status_code == 404 and exc.path == API_PATH:
+            return (
+                "This server may not expose the v2 evaluators endpoint; "
+                "pin langfuse-evaluators 0.1.0 for older self-hosted servers."
+            )
         return _ERROR_HINTS.get(exc.error_kind)
-    if isinstance(exc, LangfuseTransportError):
-        return "Check LANGFUSE_HOST and your network connection."
     return None
 
 

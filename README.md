@@ -75,7 +75,8 @@ LANGFUSE_HOST=http://localhost:3000
 URL with an `http://` or `https://` scheme works, including self-hosted
 instances and path-mounted deployments; a path prefix in the host is preserved,
 so `https://example.com/langfuse` targets
-`https://example.com/langfuse/api/public/v2/evaluators`.
+`https://example.com/langfuse/api/public/v2/evaluators`. A host without an
+`http://` or `https://` scheme is rejected before any request is sent.
 
 ## Usage
 
@@ -221,6 +222,9 @@ endpoint. See the release notes below for what changed.
   `result["status"]` must switch to the returned object and to exceptions.
   The batch helper `create_evaluators()` keeps the legacy per-item dict shape
   (`status`, `reason`, `body`, `name`) and adds `evaluatorId` and `version`.
+  Callers that cannot migrate yet can use `create_evaluator_result()`, a
+  compatibility shim that still returns the `0.1.0` `{status, reason, body}`
+  dict and reports failures in that dict instead of raising.
 - Evaluators are identified by `evaluatorId` instead of by name. The
   `create-evaluators` CLI still reports `name` for readability but also reports
   `evaluatorId`; downstream automation should key on `evaluatorId`.

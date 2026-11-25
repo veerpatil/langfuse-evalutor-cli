@@ -136,6 +136,25 @@ def test_request_honours_base_path_in_host(connection, config):
     assert path_of(conn.calls[0].url) == f"/langfuse{API_PATH}"
 
 
+def test_schemeless_host_is_rejected_before_the_request(connection, config):
+    conn = connection()
+
+    with pytest.raises(LangfuseError) as excinfo:
+        client.list_evaluators(dict(config, host="example.com"))
+
+    assert conn.calls == []
+    assert "http:// or https://" in str(excinfo.value)
+
+
+def test_host_without_a_netloc_is_rejected(connection, config):
+    conn = connection()
+
+    with pytest.raises(LangfuseError):
+        client.get_evaluator("eval-123", dict(config, host="https://"))
+
+    assert conn.calls == []
+
+
 def test_list_evaluators_sends_cursor_and_limit(connection, config):
     conn = connection(
         json_response(
@@ -257,6 +276,22 @@ def test_iter_evaluators_starts_at_supplied_cursor(connection, config):
         "limit": ["5"],
         "cursor": ["resume-here"],
     }
+
+
+def test_iter_evaluators_stops_when_the_api_echoes_the_start_cursor(connection, config):
+    conn = connection(
+        json_response(
+            {
+                "data": [dict(API_EVALUATOR, id="eval-5")],
+                "meta": {"cursor": "resume-here"},
+            }
+        )
+    )
+
+    evaluators = list(client.iter_evaluators(config, cursor="resume-here"))
+
+    assert [item.evaluator_id for item in evaluators] == ["eval-5"]
+    assert len(conn.calls) == 1
 
 
 def test_iter_evaluators_stops_on_repeated_cursor(connection, config):
@@ -417,6 +452,16 @@ def test_non_json_error_body_is_kept_as_message(connection, config):
     assert excinfo.value.body == {"message": "<html>oops"}
 
 
+def test_non_utf8_body_is_decoded_instead_of_escaping(connection, config):
+    connection(FakeResponse(status=502, reason="Bad Gateway", body=b"\xff\xfe"))
+
+    with pytest.raises(LangfuseAPIError) as excinfo:
+        client.get_evaluator("eval-123", config)
+
+    assert excinfo.value.status_code == 502
+    assert "\ufffd" in excinfo.value.body["message"]
+
+
 # --- malformed responses --------------------------------------------------
 
 
@@ -545,6 +590,50 @@ def test_create_evaluators_reports_credential_failures(connection, config, monke
     assert results[0]["status"] == 0
     assert results[0]["reason"] == "LangfuseError"
     assert "credentials" in results[0]["body"]["message"].lower()
+
+
+def test_create_evaluators_reports_unreadable_created_response(
+    connection, config, monkeypatch
+):
+    monkeypatch.setattr(client, "get_config", lambda: config)
+    connection(json_response({"name": "no id here"}, status=201, reason="Created"))
+
+    results = client.create_evaluators([EVALUATOR_PAYLOAD])
+
+    assert results[0]["status"] == 201
+    assert results[0]["reason"] == "ResponseParseError"
+    assert results[0]["name"] == EVALUATOR_PAYLOAD["name"]
+    assert results[0]["evaluatorId"] is None
+    message = results[0]["body"]["message"]
+    assert "created" in message.lower()
+    assert "before retrying" in message
+
+
+def test_create_evaluator_result_returns_the_legacy_shape(connection, config):
+    connection(json_response(API_EVALUATOR, status=201, reason="Created"))
+
+    result = client.create_evaluator_result(EVALUATOR_PAYLOAD, config)
+
+    assert set(result) == {"status", "reason", "body"}
+    assert result["status"] == 201
+    assert result["reason"] == "Created"
+    assert result["body"]["id"] == "eval-123"
+
+
+def test_create_evaluator_result_reports_failures_in_the_dict(connection, config):
+    connection(
+        json_response(
+            {"message": "Forbidden", "error": "AccessDenied"},
+            status=403,
+            reason="Forbidden",
+        )
+    )
+
+    result = client.create_evaluator_result(EVALUATOR_PAYLOAD, config)
+
+    assert result["status"] == 403
+    assert result["reason"] == "Forbidden"
+    assert result["body"]["error"] == "AccessDenied"
 
 
 def test_credentials_with_control_characters_are_rejected(connection, config):
