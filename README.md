@@ -12,6 +12,10 @@ Evaluators are addressed by their stable evaluator id (`evaluatorId`), listing
 uses cursor pagination, and Langfuse errors are mapped to stable error kinds so
 callers never have to parse error message strings.
 
+The same package also provides an MLflow scorer client for evaluator parity:
+register, list, retrieve, version, and delete scorers through MLflow's scorer
+REST API.
+
 ## Project Structure
 
 ```text
@@ -25,6 +29,10 @@ callers never have to parse error message strings.
 │       ├── config.py
 │       ├── errors.py
 │       ├── models.py
+│       ├── mlflow_scorers/
+│       │   ├── client.py
+│       │   ├── errors.py
+│       │   └── models.py
 │       └── evaluators/
 │           ├── llm_as_judge.py
 │           └── code_evaluators.py
@@ -39,6 +47,9 @@ Key files:
 - `src/langfuse_evaluators/models.py`: request validation and v2 evaluator/version response models.
 - `src/langfuse_evaluators/errors.py`: structured Langfuse API errors and status-to-kind mapping.
 - `src/langfuse_evaluators/config.py`: loads Langfuse credentials and host configuration.
+- `src/langfuse_evaluators/mlflow_scorers/client.py`: sends requests to the MLflow scorer API.
+- `src/langfuse_evaluators/mlflow_scorers/models.py`: scorer validation and response models.
+- `src/langfuse_evaluators/mlflow_scorers/errors.py`: MLflow API errors and error-code-to-kind mapping.
 - `src/langfuse_evaluators/evaluators/llm_as_judge.py`: predefined LLM-as-Judge evaluators.
 - `src/langfuse_evaluators/evaluators/code_evaluators.py`: predefined TypeScript code evaluators.
 
@@ -173,6 +184,75 @@ uv run create-evaluators versions <evaluator-id> --all --json
 - `Output Length Check`: checks whether output stays within a fixed length limit.
 - `Tool Call Validator`: checks whether tool calls include required names and arguments.
 
+## MLflow scorers
+
+The package exposes a parallel client for MLflow scorers under
+`langfuse_evaluators.mlflow_scorers`. Scorers are always scoped to an
+experiment and addressed by the pair `(experiment_id, name)`; every
+registration returns the server-assigned `scorer_id` plus a new `version`.
+
+```python
+from langfuse_evaluators.config import get_mlflow_config
+from langfuse_evaluators.mlflow_scorers import (
+    delete_scorer,
+    get_scorer,
+    list_scorer_versions,
+    list_scorers,
+    register_scorer,
+)
+
+config = get_mlflow_config()
+
+created = register_scorer(
+    {
+        "name": "Helpfulness",
+        "serialized_scorer": '{"name": "Helpfulness", "type": "llm"}',
+    },
+    config,
+)
+
+latest = get_scorer("Helpfulness", config)  # latest version by default
+first = get_scorer("Helpfulness", config, version=1)
+scorers = list_scorers(config)  # latest version of each scorer
+versions = list_scorer_versions("Helpfulness", config)
+delete_scorer("Helpfulness", config, version=1)  # one version
+delete_scorer("Helpfulness", config)  # every version
+```
+
+The experiment defaults to `MLFLOW_EXPERIMENT_ID` and can be overridden per
+call with `experiment_id`.
+Registering a name that already exists adds a version under the same
+`scorer_id`; MLflow rejects a name that collates equal to an existing one with
+`RESOURCE_ALREADY_EXISTS`.
+
+MLflow failures keep their structured body and `error_code`, and are mapped to
+the same stable error kinds as the Langfuse client. An `error_code` of
+`RESOURCE_ALREADY_EXISTS` (duplicate registration) maps to `conflict` and
+`RESOURCE_DOES_NOT_EXIST` (unknown scorer or version) maps to `not_found`, even
+though MLflow reports both with an HTTP 400.
+
+```python
+from langfuse_evaluators.mlflow_scorers import MLflowAPIError
+
+try:
+    register_scorer(payload, config)
+except MLflowAPIError as exc:
+    if exc.error_kind == "conflict":
+        ...
+```
+
+The request shapes follow the MLflow 3.x tracking server (verified against the
+`mlflow==3.18.0` package): `register` is a JSON POST, `list`/`versions`/`get`
+are GETs whose parameters are sent as query string values, and `delete` is a
+DELETE with a JSON body. The 3.18.0 handlers for `list` and `versions` define
+no page-token or result-limit fields, so both return the complete collection
+for the experiment and there is no page token to follow; listing is scoped to
+a single experiment. If a future MLflow release adds a page-token field to
+either response, the client raises `MLflowResponseError` instead of silently
+returning a truncated collection. Responses use the
+`Scorer` entity fields (`scorer_name`, `scorer_version`) or the register
+response fields (`name`, `version`); the client accepts both.
+
 ## Configuration
 
 The CLI reads configuration from environment variables or from a root-level `.env` file.
@@ -182,10 +262,25 @@ The CLI reads configuration from environment variables or from a root-level `.en
 | `LANGFUSE_PUBLIC_KEY` | Yes | None | Langfuse public API key |
 | `LANGFUSE_SECRET_KEY` | Yes | None | Langfuse secret API key |
 | `LANGFUSE_HOST` | No | `http://localhost:3000` | Langfuse host URL |
+| `MLFLOW_HOST` | No | `http://localhost:5000` | MLflow tracking server URL |
+| `MLFLOW_EXPERIMENT_ID` | No | None | Default experiment for scorer registration and listing |
+| `MLFLOW_TRACKING_TOKEN` | No | None | Bearer token sent as `Authorization: Bearer ...` |
+| `MLFLOW_TRACKING_USERNAME` | No | None | HTTP Basic username; requires `MLFLOW_TRACKING_PASSWORD` |
+| `MLFLOW_TRACKING_PASSWORD` | No | None | HTTP Basic password; requires `MLFLOW_TRACKING_USERNAME` |
 
 If `LANGFUSE_PUBLIC_KEY` or `LANGFUSE_SECRET_KEY` is missing, the CLI exits with an error.
 Requests use HTTP Basic authentication built from those two keys. Credentials
 and evaluator payloads are never included in error messages or log output.
+
+MLflow requests are unauthenticated unless one of the `MLFLOW_TRACKING_*`
+credential forms is configured; a token takes precedence over Basic
+credentials. Local tracking servers usually accept unauthenticated calls, but
+any remote deployment should set an `https://` `MLFLOW_HOST` together with
+`MLFLOW_TRACKING_TOKEN`, because scorer payloads may embed proprietary prompts
+and a plaintext host sends them in the clear. To enforce that, the client
+refuses to send credentials over an `http://` host that is not loopback: a
+remote plaintext host fails closed with an `MLflowError` instead of exposing
+the credential and payloads on the wire.
 
 ## API behavior
 
@@ -268,12 +363,15 @@ python -m pytest
 ```
 
 The suite has a unit layer that replaces `http.client` with a fake, plus a
-small integration layer in `tests/test_integration.py` that runs the client
-against a real local HTTP server.
+small integration layer in `tests/test_integration.py` and
+`tests/test_mlflow_integration.py` that runs each client against a real local
+HTTP server.
 
 ## Notes
 
 - The API path used by this project is `/api/public/v2/evaluators`.
+- MLflow scorers use `/api/3.0/mlflow/scorers/{register,list,get,versions,delete}`.
+  `MLFLOW_HOST` may include a path prefix, which is preserved on every request.
 - `LANGFUSE_HOST` may include a path prefix, which is preserved on every
   request.
 - Credentials are validated before the request is sent; values containing
