@@ -176,6 +176,26 @@ def test_list_scorers_accepts_an_explicit_experiment(mlflow_connection, mlflow_c
     assert query_params(conn.calls[0].url)["experiment_id"] == ["exp-9"]
 
 
+def test_request_sends_a_bearer_token_when_configured(
+    mlflow_connection, mlflow_config
+):
+    conn = mlflow_connection(json_response({"scorers": []}))
+
+    client.list_scorers(dict(mlflow_config, authorization="Bearer token-123"))
+
+    assert conn.calls[0].headers["Authorization"] == "Bearer token-123"
+
+
+def test_request_sends_basic_credentials_when_configured(
+    mlflow_connection, mlflow_config
+):
+    conn = mlflow_connection(json_response({"scorers": []}))
+
+    client.list_scorers(dict(mlflow_config, authorization="Basic dXNlcjpwYXNz"))
+
+    assert conn.calls[0].headers["Authorization"] == "Basic dXNlcjpwYXNz"
+
+
 def test_list_scorers_supports_a_multi_experiment_filter(
     mlflow_connection, mlflow_config
 ):

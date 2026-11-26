@@ -245,8 +245,10 @@ except MLflowAPIError as exc:
 The request shapes follow the MLflow 3.x tracking server (verified against the
 `mlflow==3.18.0` package): `register` is a JSON POST, `list`/`versions`/`get`
 are GETs whose parameters are sent as query string values, and `delete` is a
-DELETE with a JSON body. `list` and `versions` return the complete collection
-for the experiment, so there is no page token to follow. Responses use the
+DELETE with a JSON body. The 3.18.0 handlers for `list` and `versions` define
+no page-token or result-limit fields, so both return the complete collection
+for the experiment and there is no page token to follow; filtering is provided
+by `experiment_id`/`experiment_ids` instead. Responses use the
 `Scorer` entity fields (`scorer_name`, `scorer_version`) or the register
 response fields (`name`, `version`); the client accepts both.
 
@@ -261,10 +263,20 @@ The CLI reads configuration from environment variables or from a root-level `.en
 | `LANGFUSE_HOST` | No | `http://localhost:3000` | Langfuse host URL |
 | `MLFLOW_HOST` | No | `http://localhost:5000` | MLflow tracking server URL |
 | `MLFLOW_EXPERIMENT_ID` | No | None | Default experiment for scorer registration and listing |
+| `MLFLOW_TRACKING_TOKEN` | No | None | Bearer token sent as `Authorization: Bearer ...` |
+| `MLFLOW_TRACKING_USERNAME` | No | None | HTTP Basic username; requires `MLFLOW_TRACKING_PASSWORD` |
+| `MLFLOW_TRACKING_PASSWORD` | No | None | HTTP Basic password; requires `MLFLOW_TRACKING_USERNAME` |
 
 If `LANGFUSE_PUBLIC_KEY` or `LANGFUSE_SECRET_KEY` is missing, the CLI exits with an error.
 Requests use HTTP Basic authentication built from those two keys. Credentials
 and evaluator payloads are never included in error messages or log output.
+
+MLflow requests are unauthenticated unless one of the `MLFLOW_TRACKING_*`
+credential forms is configured; a token takes precedence over Basic
+credentials. Local tracking servers usually accept unauthenticated calls, but
+any remote deployment should set an `https://` `MLFLOW_HOST` together with
+`MLFLOW_TRACKING_TOKEN`, because scorer payloads may embed proprietary prompts
+and a plaintext host sends them in the clear.
 
 ## API behavior
 

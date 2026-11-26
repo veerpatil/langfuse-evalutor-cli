@@ -76,6 +76,24 @@ def test_validate_requires_an_experiment_id():
     assert "experiment_id" in str(excinfo.value)
 
 
+@pytest.mark.parametrize("experiment_id", [0, False, 123, []])
+def test_validate_rejects_a_non_string_experiment_id(experiment_id):
+    # A falsy but explicit experiment id must not be replaced by the
+    # configured default, which would register the scorer elsewhere.
+    with pytest.raises(ValueError):
+        validate_scorer_payload(
+            dict(SCORER_PAYLOAD, experiment_id=experiment_id), "exp-default"
+        )
+
+
+def test_validate_treats_an_empty_experiment_id_as_unset():
+    validated = validate_scorer_payload(
+        dict(SCORER_PAYLOAD, experiment_id=""), "exp-default"
+    )
+
+    assert validated["experiment_id"] == "exp-default"
+
+
 def test_validate_strips_the_name_so_register_and_lookup_agree():
     validated = validate_scorer_payload(
         dict(SCORER_PAYLOAD, name="  Helpfulness  "), "exp-default"
@@ -139,6 +157,21 @@ def test_scorer_from_api_accepts_an_iso_creation_time():
     )
 
     assert scorer.creation_time == "2026-01-01T00:00:00Z"
+
+
+@pytest.mark.parametrize("version", ["--5", "5.0", "++5", "", "  "])
+def test_scorer_from_api_ignores_a_malformed_numeric_version(version):
+    # A malformed numeric string must not escape as a plain ValueError from
+    # the response parser.
+    scorer = Scorer.from_api(dict(SCORER_ENTITY, scorer_version=version))
+
+    assert scorer.version is None
+
+
+def test_scorer_from_api_accepts_a_signed_numeric_version():
+    scorer = Scorer.from_api(dict(SCORER_ENTITY, scorer_version=" -2 "))
+
+    assert scorer.version == -2
 
 
 @pytest.mark.parametrize(

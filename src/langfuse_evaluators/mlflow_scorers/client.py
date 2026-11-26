@@ -9,6 +9,8 @@ are mapped onto the same stable error kinds the Langfuse client uses.
 The request shapes follow the MLflow tracking-server contract: ``register``
 is a JSON POST, ``list``/``versions``/``get`` are GETs whose parameters are
 sent as query string values, and ``delete`` is a DELETE with a JSON body.
+Authentication is optional and supplied by ``get_mlflow_config`` as an
+``authorization`` value, which is sent as the ``Authorization`` header.
 """
 
 from __future__ import annotations
@@ -108,10 +110,16 @@ def _request(
     that is not valid JSON is returned as ``{"message": <raw body>}`` so
     callers can surface it; the response models reject it where a
     structured payload is required.
+
+    Credentials are optional: when ``get_mlflow_config`` resolved a bearer
+    token or Basic key pair, its ``authorization`` value is sent verbatim.
     """
     url = _build_url(config["host"], path, query)
 
     headers = {"Accept": "application/json"}
+    authorization = config.get("authorization")
+    if authorization:
+        headers["Authorization"] = authorization
     payload = None
     if body is not None:
         payload = json.dumps(body)

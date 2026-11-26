@@ -11,8 +11,14 @@ from langfuse_evaluators import config as config_module
 
 @pytest.fixture(autouse=True)
 def no_env_file(monkeypatch, tmp_path):
-    """Keep a developer's local .env file out of the tests."""
+    """Keep a developer's local .env file or shell out of the tests."""
     monkeypatch.setattr(config_module, "ENV_FILE", tmp_path / "missing.env")
+    for name in (
+        "MLFLOW_TRACKING_TOKEN",
+        "MLFLOW_TRACKING_USERNAME",
+        "MLFLOW_TRACKING_PASSWORD",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def test_get_config_builds_basic_credentials(monkeypatch):
@@ -70,3 +76,45 @@ def test_get_mlflow_config_does_not_require_langfuse_keys(monkeypatch):
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
 
     assert config_module.get_mlflow_config()["host"] == "http://localhost:5000"
+
+
+def test_get_mlflow_config_omits_authorization_without_credentials():
+    assert "authorization" not in config_module.get_mlflow_config()
+
+
+def test_get_mlflow_config_uses_a_bearer_token(monkeypatch):
+    monkeypatch.setenv("MLFLOW_TRACKING_TOKEN", "mlflow-token")
+
+    assert (
+        config_module.get_mlflow_config()["authorization"]
+        == "Bearer mlflow-token"
+    )
+
+
+def test_get_mlflow_config_builds_basic_credentials(monkeypatch):
+    monkeypatch.setenv("MLFLOW_TRACKING_USERNAME", "user")
+    monkeypatch.setenv("MLFLOW_TRACKING_PASSWORD", "pass")
+
+    expected = base64.b64encode(b"user:pass").decode()
+    assert (
+        config_module.get_mlflow_config()["authorization"]
+        == f"Basic {expected}"
+    )
+
+
+def test_get_mlflow_config_prefers_a_token_over_basic_credentials(monkeypatch):
+    monkeypatch.setenv("MLFLOW_TRACKING_TOKEN", "mlflow-token")
+    monkeypatch.setenv("MLFLOW_TRACKING_USERNAME", "user")
+    monkeypatch.setenv("MLFLOW_TRACKING_PASSWORD", "pass")
+
+    assert (
+        config_module.get_mlflow_config()["authorization"]
+        == "Bearer mlflow-token"
+    )
+
+
+def test_get_mlflow_config_requires_both_basic_credentials(monkeypatch):
+    monkeypatch.setenv("MLFLOW_TRACKING_USERNAME", "user")
+
+    with pytest.raises(RuntimeError):
+        config_module.get_mlflow_config()

@@ -42,9 +42,15 @@ def _optional_int(value: Any) -> int | None:
     if isinstance(value, int):
         return value
     if isinstance(value, str):
-        candidate = value.strip()
-        if candidate.lstrip("-").isdigit():
-            return int(candidate)
+        # ``int`` accepts a leading sign, so a guard like
+        # ``lstrip("-").isdigit()`` let values such as ``"--5"`` through
+        # and escaped as a plain ``ValueError``. Convert and fall back so a
+        # malformed numeric string yields ``None`` like every other
+        # unsupported type.
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
     return None
 
 
@@ -94,7 +100,16 @@ def validate_scorer_payload(payload: Any, experiment_id: str | None = None) -> d
         )
     data = payload
 
-    resolved_experiment_id = data.get("experiment_id") or experiment_id
+    # Only an unset value (missing or empty) falls back to the configured
+    # default. Any other falsy value (``0``, ``False``) is an explicit
+    # experiment id and fails the type check below, instead of silently
+    # registering the scorer under a different experiment.
+    raw_experiment_id = data.get("experiment_id")
+    resolved_experiment_id = (
+        raw_experiment_id
+        if raw_experiment_id is not None and raw_experiment_id != ""
+        else experiment_id
+    )
     if (
         not isinstance(resolved_experiment_id, str)
         or not resolved_experiment_id.strip()

@@ -380,3 +380,28 @@ def test_deleting_a_missing_version_maps_to_not_found(live_config):
         client.delete_scorer("Helpfulness", live_config, version=99)
 
     assert excinfo.value.error_kind == "not_found"
+
+
+def test_names_with_reserved_characters_round_trip(live_config):
+    # Spaces, ``&``, and non-ASCII characters must survive the query-string
+    # encoding the client applies to get/versions/list lookups.
+    experiment_id = "exp 1 & 2"
+    name = "Help fulness & co café"
+
+    created = register(live_config, experiment_id, name, DEFINITION)
+
+    fetched = client.get_scorer(name, live_config, experiment_id=experiment_id)
+    assert fetched.scorer_id == created.scorer_id
+    assert fetched.name == name
+    assert fetched.experiment_id == experiment_id
+
+    listed = client.list_scorers(live_config, experiment_id=experiment_id)
+    assert [scorer.name for scorer in listed] == [name]
+
+    versions = client.list_scorer_versions(
+        name, live_config, experiment_id=experiment_id
+    )
+    assert [version.version for version in versions] == [1]
+
+    client.delete_scorer(name, live_config, experiment_id=experiment_id)
+    assert client.list_scorers(live_config, experiment_id=experiment_id) == ()
