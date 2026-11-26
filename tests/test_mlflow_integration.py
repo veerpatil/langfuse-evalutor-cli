@@ -153,13 +153,11 @@ class ScorerHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         if parsed.path == f"{client.API_PATH}/list":
-            experiment_ids = query.get("experiment_ids")
-            if experiment_ids is None:
-                experiment_ids = [query["experiment_id"][0]]
+            experiment_id = query["experiment_id"][0]
             stores = [
                 store
-                for (experiment_id, _), store in self.server.scorers.items()
-                if experiment_id in experiment_ids
+                for (stored_experiment, _), store in self.server.scorers.items()
+                if stored_experiment == experiment_id
             ]
             self._reply(
                 200,
@@ -361,16 +359,6 @@ def test_list_is_scoped_to_the_experiment(live_config):
 
     other_experiment = client.list_scorers(live_config, experiment_id="exp-2")
     assert [scorer.name for scorer in other_experiment] == ["Other"]
-
-
-def test_list_filters_across_experiments(live_config):
-    register(live_config, "exp-1", "Alpha", json.dumps({"name": "Alpha"}))
-    register(live_config, "exp-2", "Beta", json.dumps({"name": "Beta"}))
-    register(live_config, "exp-3", "Other", json.dumps({"name": "Other"}))
-
-    scorers = client.list_scorers(live_config, experiment_ids=["exp-1", "exp-2"])
-
-    assert sorted(scorer.name for scorer in scorers) == ["Alpha", "Beta"]
 
 
 def test_deleting_a_missing_version_maps_to_not_found(live_config):

@@ -196,31 +196,6 @@ def test_request_sends_basic_credentials_when_configured(
     assert conn.calls[0].headers["Authorization"] == "Basic dXNlcjpwYXNz"
 
 
-def test_list_scorers_supports_a_multi_experiment_filter(
-    mlflow_connection, mlflow_config
-):
-    conn = mlflow_connection(json_response({"scorers": []}))
-
-    client.list_scorers(mlflow_config, experiment_ids=["exp-1", "exp-2"])
-
-    assert query_params(conn.calls[0].url) == {
-        "experiment_ids": ["exp-1", "exp-2"]
-    }
-
-
-def test_list_scorers_rejects_both_experiment_scopes(
-    mlflow_connection, mlflow_config
-):
-    conn = mlflow_connection()
-
-    with pytest.raises(ValueError):
-        client.list_scorers(
-            mlflow_config, experiment_id="exp-1", experiment_ids=["exp-2"]
-        )
-
-    assert conn.calls == []
-
-
 def test_list_scorers_requires_an_experiment(mlflow_connection, mlflow_config):
     conn = mlflow_connection()
 
@@ -230,26 +205,94 @@ def test_list_scorers_requires_an_experiment(mlflow_connection, mlflow_config):
     assert conn.calls == []
 
 
-def test_list_scorers_rejects_an_empty_experiment_ids_filter(
+@pytest.mark.parametrize("experiment_id", [0, False])
+def test_operations_reject_an_explicit_falsy_experiment_id(
+    mlflow_connection, mlflow_config, experiment_id
+):
+    # ``0`` and ``False`` are explicit experiment ids, not "unset", so they
+    # must fail the type check instead of falling back to the default.
+    conn = mlflow_connection()
+
+    with pytest.raises(ValueError):
+        client.get_scorer("Helpfulness", mlflow_config, experiment_id=experiment_id)
+
+    assert conn.calls == []
+
+
+def test_list_scorers_rejects_an_explicit_falsy_experiment_id(
     mlflow_connection, mlflow_config
 ):
     conn = mlflow_connection()
 
     with pytest.raises(ValueError):
-        client.list_scorers(mlflow_config, experiment_ids=[])
+        client.list_scorers(mlflow_config, experiment_id=False)
 
     assert conn.calls == []
 
 
-def test_list_scorers_rejects_a_string_for_experiment_ids(
+def test_request_refuses_credentials_over_plaintext_http_to_a_remote_host(
     mlflow_connection, mlflow_config
 ):
     conn = mlflow_connection()
 
-    with pytest.raises(TypeError):
-        client.list_scorers(mlflow_config, experiment_ids="exp-1")
+    with pytest.raises(MLflowError) as excinfo:
+        client.list_scorers(
+            dict(
+                mlflow_config,
+                host="http://mlflow.example.com",
+                authorization="Bearer token-123",
+            )
+        )
 
     assert conn.calls == []
+    assert "https://" in str(excinfo.value)
+
+
+def test_request_allows_credentials_over_https(mlflow_connection, mlflow_config):
+    conn = mlflow_connection(json_response({"scorers": []}))
+
+    client.list_scorers(
+        dict(
+            mlflow_config,
+            host="https://mlflow.example.com",
+            authorization="Bearer token-123",
+        )
+    )
+
+    assert conn.calls[0].headers["Authorization"] == "Bearer token-123"
+
+
+def test_request_allows_credentials_on_a_loopback_plaintext_host(
+    mlflow_connection, mlflow_config
+):
+    conn = mlflow_connection(json_response({"scorers": []}))
+
+    client.list_scorers(
+        dict(
+            mlflow_config,
+            host="http://127.0.0.1:5000",
+            authorization="Basic dXNlcjpwYXNz",
+        )
+    )
+
+    assert conn.calls[0].headers["Authorization"] == "Basic dXNlcjpwYXNz"
+
+
+@pytest.mark.parametrize("command", ["list", "versions"])
+def test_scorer_collections_reject_a_pagination_token(
+    mlflow_connection, mlflow_config, command
+):
+    conn = mlflow_connection(
+        json_response({"scorers": [SCORER_ENTITY], "next_page_token": "page-2"})
+    )
+
+    with pytest.raises(MLflowResponseError):
+        if command == "list":
+            client.list_scorers(mlflow_config)
+        else:
+            client.list_scorer_versions("Helpfulness", mlflow_config)
+
+    assert conn.calls[0].method == "GET"
 
 
 def test_list_scorer_versions_uses_the_versions_path(mlflow_connection, mlflow_config):

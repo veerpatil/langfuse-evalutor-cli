@@ -186,12 +186,37 @@ def scorers_from_list(payload: Any) -> tuple[Scorer, ...]:
 
     MLflow omits the repeated ``scorers`` field when the result is empty,
     so a missing key means an empty collection rather than a malformed
-    response.
+    response. The scorer list and versions handlers were pageless in the
+    MLflow version this client was verified against, so a response that
+    carries a page-token field is rejected instead of being returned as a
+    silently truncated collection.
     """
     data = _as_mapping(payload, "scorer list")
+    _reject_pagination_token(data)
     items = data.get("scorers", [])
     if not isinstance(items, list):
         raise MLflowResponseError(
             "Expected a JSON list under 'scorers' for the scorer list"
         )
     return tuple(Scorer.from_api(item) for item in items)
+
+
+# Page-token field names a future MLflow release could add to the scorer
+# list/versions responses. The client does not follow page tokens, so
+# returning the first page would silently drop results.
+_PAGINATION_TOKEN_KEYS = (
+    "next_page_token",
+    "page_token",
+    "nextPageToken",
+    "pageToken",
+)
+
+
+def _reject_pagination_token(data: Mapping[str, Any]) -> None:
+    for key in _PAGINATION_TOKEN_KEYS:
+        if data.get(key):
+            raise MLflowResponseError(
+                "Scorer list response carries a pagination token "
+                "(a page-token field); this client does not follow page "
+                "tokens and would return only the first page"
+            )

@@ -11,13 +11,15 @@ is a JSON POST, ``list``/``versions``/``get`` are GETs whose parameters are
 sent as query string values, and ``delete`` is a DELETE with a JSON body.
 Authentication is optional and supplied by ``get_mlflow_config`` as an
 ``authorization`` value, which is sent as the ``Authorization`` header.
+Credentials are never sent over plaintext HTTP to a non-local host, so a
+misconfigured ``MLFLOW_HOST`` fails closed instead of leaking them.
 """
 
 from __future__ import annotations
 
 import http.client
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import ParseResult, urlencode, urlparse
 
@@ -60,6 +62,34 @@ def _parse_host(host_url: str) -> ParseResult:
     return parsed
 
 
+# Hosts for which a plaintext ``http://`` origin stays inside the machine,
+# so sending credentials there cannot expose them on the network.
+_LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _require_secure_transport(host_url: str, authorization: str | None) -> None:
+    """Refuse to send MLflow credentials over plaintext HTTP.
+
+    A local tracking server defaults to ``http://localhost``, so an
+    unauthenticated or loopback plaintext host keeps working. Once
+    credentials are configured, an ``http://`` host outside loopback would
+    put the credential and the scorer payloads on the wire in the clear,
+    so the request fails closed instead.
+    """
+    if not authorization:
+        return
+    parsed = _parse_host(host_url)
+    if parsed.scheme != "http":
+        return
+    if (parsed.hostname or "").lower() in _LOCAL_HOSTNAMES:
+        return
+    raise MLflowError(
+        "refusing to send MLflow credentials over plaintext HTTP; use an "
+        "https:// MLFLOW_HOST (only a localhost host may stay on http://) or "
+        "unset the MLflow credentials"
+    )
+
+
 def _get_connection(host_url: str) -> http.client.HTTPConnection:
     parsed = _parse_host(host_url)
     if parsed.scheme == "https":
@@ -75,8 +105,8 @@ def _base_path(host_url: str) -> str:
 def _build_url(host_url: str, path: str, query: Mapping[str, Any] | None = None) -> str:
     """Join the configured host, the API path, and any query parameters.
 
-    ``doseq`` lets ``experiment_ids`` be sent as a repeated parameter,
-    which is how MLflow expresses a multi-experiment filter.
+    Parameters whose value is ``None`` are omitted so an optional parameter
+    such as ``version`` can mean "not sent".
     """
     url = f"{_base_path(host_url)}{path}"
     if not query:
@@ -84,7 +114,7 @@ def _build_url(host_url: str, path: str, query: Mapping[str, Any] | None = None)
     params = {key: value for key, value in query.items() if value is not None}
     if not params:
         return url
-    return f"{url}?{urlencode(params, doseq=True)}"
+    return f"{url}?{urlencode(params)}"
 
 
 def _parse_response_body(body: str) -> Any:
@@ -113,12 +143,15 @@ def _request(
 
     Credentials are optional: when ``get_mlflow_config`` resolved a bearer
     token or Basic key pair, its ``authorization`` value is sent verbatim.
+    Sending it to a non-local ``http://`` host is refused so credentials are
+    never transmitted in the clear.
     """
     url = _build_url(config["host"], path, query)
 
     headers = {"Accept": "application/json"}
     authorization = config.get("authorization")
     if authorization:
+        _require_secure_transport(config["host"], authorization)
         headers["Authorization"] = authorization
     payload = None
     if body is not None:
@@ -180,20 +213,16 @@ def _validate_version(version: int) -> None:
 def _resolve_experiment_id(
     experiment_id: str | None, config: Mapping[str, str]
 ) -> str:
-    return _require_experiment_id(
-        experiment_id or config.get("experiment_id") or ""
-    )
+    """Resolve the experiment scope of a single-experiment operation.
 
-
-def _validate_experiment_ids(experiment_ids: Sequence[str]) -> tuple[str, ...]:
-    if isinstance(experiment_ids, (str, bytes)) or not isinstance(
-        experiment_ids, Sequence
-    ):
-        raise TypeError("experiment_ids must be a sequence of strings")
-    resolved = tuple(_require_experiment_id(value) for value in experiment_ids)
-    if not resolved:
-        raise ValueError("experiment_ids must contain at least one experiment id")
-    return resolved
+    Only an omitted or empty ``experiment_id`` falls back to the configured
+    default. Any other value reaches ``_require_experiment_id``, so an
+    explicit falsy non-string (``0``, ``False``) is rejected instead of
+    silently operating on the default experiment.
+    """
+    if experiment_id is None or experiment_id == "":
+        experiment_id = config.get("experiment_id", "")
+    return _require_experiment_id(experiment_id)
 
 
 def register_scorer(scorer: Mapping[str, Any], config: Mapping[str, str]) -> Scorer:
@@ -234,27 +263,14 @@ def get_scorer(
 def list_scorers(
     config: Mapping[str, str],
     experiment_id: str | None = None,
-    experiment_ids: Sequence[str] | None = None,
 ) -> tuple[Scorer, ...]:
     """List an experiment's scorers (latest version of each name).
 
-    Exactly one experiment scope may be used: a single ``experiment_id``
-    (or the configured default) or ``experiment_ids`` for a
-    multi-experiment filter. MLflow returns the complete collection in
-    one response; there is no page token for this endpoint.
+    The experiment defaults to the configured ``experiment_id`` and can be
+    overridden per call. MLflow returns the complete collection in one
+    response; there is no page token for this endpoint.
     """
-    if experiment_id is not None and experiment_ids is not None:
-        raise ValueError(
-            "pass either experiment_id or experiment_ids, not both"
-        )
-    if experiment_ids is not None:
-        query: dict[str, Any] = {
-            "experiment_ids": list(_validate_experiment_ids(experiment_ids))
-        }
-    else:
-        query = {
-            "experiment_id": _resolve_experiment_id(experiment_id, config)
-        }
+    query = {"experiment_id": _resolve_experiment_id(experiment_id, config)}
     _, _, body = _request("GET", _scorer_path("list"), config, query=query)
     return scorers_from_list(body)
 

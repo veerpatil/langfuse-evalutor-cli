@@ -214,14 +214,13 @@ created = register_scorer(
 latest = get_scorer("Helpfulness", config)  # latest version by default
 first = get_scorer("Helpfulness", config, version=1)
 scorers = list_scorers(config)  # latest version of each scorer
-more = list_scorers(config, experiment_ids=["1", "2"])
 versions = list_scorer_versions("Helpfulness", config)
 delete_scorer("Helpfulness", config, version=1)  # one version
 delete_scorer("Helpfulness", config)  # every version
 ```
 
 The experiment defaults to `MLFLOW_EXPERIMENT_ID` and can be overridden per
-call with `experiment_id`, or widened with `experiment_ids` on `list_scorers`.
+call with `experiment_id`.
 Registering a name that already exists adds a version under the same
 `scorer_id`; MLflow rejects a name that collates equal to an existing one with
 `RESOURCE_ALREADY_EXISTS`.
@@ -247,8 +246,10 @@ The request shapes follow the MLflow 3.x tracking server (verified against the
 are GETs whose parameters are sent as query string values, and `delete` is a
 DELETE with a JSON body. The 3.18.0 handlers for `list` and `versions` define
 no page-token or result-limit fields, so both return the complete collection
-for the experiment and there is no page token to follow; filtering is provided
-by `experiment_id`/`experiment_ids` instead. Responses use the
+for the experiment and there is no page token to follow; listing is scoped to
+a single experiment. If a future MLflow release adds a page-token field to
+either response, the client raises `MLflowResponseError` instead of silently
+returning a truncated collection. Responses use the
 `Scorer` entity fields (`scorer_name`, `scorer_version`) or the register
 response fields (`name`, `version`); the client accepts both.
 
@@ -276,7 +277,10 @@ credential forms is configured; a token takes precedence over Basic
 credentials. Local tracking servers usually accept unauthenticated calls, but
 any remote deployment should set an `https://` `MLFLOW_HOST` together with
 `MLFLOW_TRACKING_TOKEN`, because scorer payloads may embed proprietary prompts
-and a plaintext host sends them in the clear.
+and a plaintext host sends them in the clear. To enforce that, the client
+refuses to send credentials over an `http://` host that is not loopback: a
+remote plaintext host fails closed with an `MLflowError` instead of exposing
+the credential and payloads on the wire.
 
 ## API behavior
 
