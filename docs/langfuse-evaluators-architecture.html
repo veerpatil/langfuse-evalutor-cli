@@ -5150,8 +5150,8 @@
         <text data-detail="context" x="630" y="335" class="t-muted" font-size="9" text-anchor="middle">6 TypeScript checks</text>
         </g>
 
-        <g id="node-langfuse-api" data-node-id="langfuse-api" data-node-label="Langfuse API" tabindex="0" role="button" aria-label="Focus Langfuse API, POST /unstable/evaluators, Langfuse Platform" aria-pressed="false" data-node-kind="external" data-node-sublabel="POST /unstable/evaluators" data-node-context="Langfuse Platform">
-          <title>Langfuse API · POST /unstable/evaluators · Langfuse Platform</title>
+        <g id="node-langfuse-api" data-node-id="langfuse-api" data-node-label="Langfuse API" tabindex="0" role="button" aria-label="Focus Langfuse API, /api/public/v2/evaluators, Langfuse Platform" aria-pressed="false" data-node-kind="external" data-node-sublabel="/api/public/v2/evaluators" data-node-context="Langfuse Platform">
+          <title>Langfuse API · /api/public/v2/evaluators · Langfuse Platform</title>
           <rect x="880" y="120" width="150" height="56" rx="6" class="c-mask"/>
           <rect x="880" y="120" width="150" height="56" rx="6" class="c-external" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(886 126) scale(0.6875)">
@@ -5159,7 +5159,7 @@
             <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="955" y="146" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Langfuse API</text>
-        <text data-detail="context" x="955" y="162" class="t-muted" font-size="9" text-anchor="middle">POST /unstable/evaluators</text>
+        <text data-detail="context" x="955" y="162" class="t-muted" font-size="9" text-anchor="middle">/api/public/v2/evaluators</text>
         </g>
 
         <g id="node-langfuse-scoring" data-node-id="langfuse-scoring" data-node-label="Scoring Engine" tabindex="0" role="button" aria-label="Focus Scoring Engine, Trace evaluation, Langfuse Platform" aria-pressed="false" data-node-kind="external" data-node-sublabel="Trace evaluation" data-node-context="Langfuse Platform">
@@ -5415,6 +5415,7 @@
         </div>
         <ul>
           <li>&bull; uv run create-evaluators [--type llm|code|all]</li>
+          <li>&bull; Subcommands: list, get, update, delete, versions</li>
           <li>&bull; Sequential POST per evaluator, 30 s timeout each</li>
           <li>&bull; Exit 0 on full success; exit 1 if any fails</li>
         </ul>
@@ -5449,7 +5450,19 @@
         </div>
         <ul>
           <li>&bull; Zero third-party deps — Python stdlib only</li>
-          <li>&bull; Targets Langfuse unstable API (may change)</li>
+          <li>&bull; Targets the stable Langfuse v2 evaluators API</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot violet"></div>
+          <h3>v2 Modules &amp; API Surface</h3>
+        </div>
+        <ul>
+          <li>&bull; client.py: GET/POST/PUT/DELETE /api/public/v2/evaluators</li>
+          <li>&bull; models.py: request validation, evaluator and version pages</li>
+          <li>&bull; errors.py: HTTP status → stable error_kind mapping</li>
         </ul>
       </div>
     </div>
