@@ -37,3 +37,23 @@ def get_config() -> dict[str, str]:
         "host": host,
         "credentials": credentials,
     }
+
+
+def get_mlflow_config() -> dict[str, str]:
+    """Load MLflow scorer configuration.
+
+    ``MLFLOW_HOST`` defaults to the local MLflow tracking server.
+    ``MLFLOW_EXPERIMENT_ID`` is the default experiment scorers are
+    registered under and listed from; it may be omitted and supplied per
+    call instead. Neither value requires Langfuse credentials, so this is
+    independent of :func:`get_config`.
+    """
+    _load_env()
+
+    host = os.environ.get("MLFLOW_HOST", "http://localhost:5000")
+    experiment_id = os.environ.get("MLFLOW_EXPERIMENT_ID", "")
+
+    return {
+        "host": host,
+        "experiment_id": experiment_id.strip(),
+    }
