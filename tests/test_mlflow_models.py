@@ -76,6 +76,23 @@ def test_validate_requires_an_experiment_id():
     assert "experiment_id" in str(excinfo.value)
 
 
+def test_validate_strips_the_name_so_register_and_lookup_agree():
+    validated = validate_scorer_payload(
+        dict(SCORER_PAYLOAD, name="  Helpfulness  "), "exp-default"
+    )
+
+    assert validated["name"] == "Helpfulness"
+
+
+def test_validate_rejects_a_non_mapping_payload_as_a_request_error():
+    # A malformed request payload is the caller's error, so it must not be
+    # reported as a bad 2xx response body.
+    with pytest.raises(ValueError) as excinfo:
+        validate_scorer_payload(["not-a-mapping"], "exp-default")
+
+    assert not isinstance(excinfo.value, MLflowResponseError)
+
+
 def test_scorer_from_api_reads_the_scorer_entity_fields():
     scorer = Scorer.from_api(dict(SCORER_ENTITY, futureField="kept"))
 

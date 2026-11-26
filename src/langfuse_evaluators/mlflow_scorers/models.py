@@ -77,8 +77,22 @@ def validate_scorer_payload(payload: Any, experiment_id: str | None = None) -> d
     configured default; every scorer must be bound to an experiment.
     Unknown keys are preserved so newer MLflow fields can be passed
     through without a client release.
+
+    A malformed *request* payload is the caller's error, so it raises
+    ``ValueError``. ``MLflowResponseError`` is reserved for a 2xx
+    response whose body does not match the contract.
+
+    ``name`` is stripped so registration sends the same wire value that
+    ``get``, ``delete``, and ``versions`` send after their own
+    normalisation; scorers are addressed by ``(experiment_id, name)``,
+    so an unstripped register would not be found by a later lookup.
     """
-    data = _as_mapping(payload, "scorer")
+    if not isinstance(payload, Mapping):
+        raise ValueError(
+            f"Expected a JSON object for the scorer payload, got "
+            f"{type(payload).__name__}"
+        )
+    data = payload
 
     resolved_experiment_id = data.get("experiment_id") or experiment_id
     if (
@@ -102,6 +116,7 @@ def validate_scorer_payload(payload: Any, experiment_id: str | None = None) -> d
 
     validated = dict(data)
     validated["experiment_id"] = resolved_experiment_id.strip()
+    validated["name"] = name.strip()
     return validated
 
 

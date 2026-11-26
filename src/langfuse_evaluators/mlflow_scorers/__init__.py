@@ -4,10 +4,14 @@ This subpackage mirrors the Langfuse evaluator client: it registers,
 lists, retrieves, versions, and deletes scorers through the MLflow REST
 API under ``/api/3.0/mlflow/scorers``, and maps failures onto the same
 stable error kinds.
+
+Only the client operations, the error types, and the ``Scorer`` model are
+re-exported here; transport details stay on the module that owns them
+(``client.API_PATH``, ``models.validate_scorer_payload``,
+``models.scorers_from_list``).
 """
 
 from .client import (
-    API_PATH,
     delete_scorer,
     get_scorer,
     list_scorer_versions,
@@ -20,10 +24,9 @@ from .errors import (
     MLflowResponseError,
     MLflowTransportError,
 )
-from .models import Scorer, scorers_from_list, validate_scorer_payload
+from .models import Scorer
 
 __all__ = [
-    "API_PATH",
     "MLflowAPIError",
     "MLflowError",
     "MLflowResponseError",
@@ -34,6 +37,4 @@ __all__ = [
     "list_scorer_versions",
     "list_scorers",
     "register_scorer",
-    "scorers_from_list",
-    "validate_scorer_payload",
 ]

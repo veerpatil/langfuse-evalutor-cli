@@ -286,13 +286,3 @@ def delete_scorer(
     if version is not None:
         body["version"] = version
     _request("DELETE", _scorer_path("delete"), config, body=body)
-
-
-__all__ = [
-    "API_PATH",
-    "delete_scorer",
-    "get_scorer",
-    "list_scorer_versions",
-    "list_scorers",
-    "register_scorer",
-]
